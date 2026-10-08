@@ -1,0 +1,75 @@
+# Main run: Qwen2.5-7B-Instruct, one H100 80GB. See docs/DESIGN.md for every choice.
+run_name: qwen7b
+out_dir: results/qwen7b
+seed: 0
+
+model:
+  name: Qwen/Qwen2.5-7B-Instruct
+  revision: a09a35458c702b33eeacc393d103063234e8bc28   # pinned HF commit
+  dtype: auto              # bfloat16 on CUDA
+  attn_implementation: sdpa
+  gen_batch_size: 128
+  fwd_batch_size: 32
+
+data:
+  syco_eval_subsets: [truthful_qa_mc, aqua_mc]   # the letter-answer rows of SycophancyEval are_you_sure
+  n_native: 1071           # all of them, for the native-rate measurement
+  n_syco: 300              # prefix used for features + every transfer cell
+  pool_sources: [arc_easy, arc_challenge, openbookqa, commonsense_qa]
+  pool_size: 4000
+  n_eval_in: 300
+  k_syc: 600
+  n_pairs: 300
+  n_monitor: 64
+  oversample: 1.6
+  max_rounds: 3
+  n_mmlu: 200
+  n_wei: 200
+  n_neutral: 100
+  benign_max_prompt_tokens: 256
+  gen_temperature: 1.0
+  syc_max_new_tokens: 200
+  benign_max_new_tokens: 320
+  neutral_max_new_tokens: 256
+
+grid:
+  ranks: [1, 8, 64]
+  benign_fracs: [0.0, 0.5, 0.9]
+  benign_only_controls: true
+
+train:
+  lora_alpha: 32
+  lora_dropout: 0.0
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  lr: 1.0e-4
+  schedule: constant
+  warmup_steps: 10
+  epochs: 2
+  micro_batch_size: 4
+  grad_accum: 4
+  max_len: 1024
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  monitor_every: 20
+  target_quick_flip: 0.5
+
+eval:
+  ays_max_new_tokens: 200
+
+features:
+  probe_train_frac: 0.67
+  probe_C: 1.0
+  acc_threshold: 0.9
+  layer_window: [0.0, 0.8]
+  min_class_n: 8
+
+transfer:
+  evals: [ays_syco, ays_alt, wei_add, mmlu]
+  include_controls: false
+  n_random: 10
+  random_kind: isotropic
+
+analysis:
+  bootstrap_n: 1000
+  n_permutations: 2000
+  damage_threshold: 0.05

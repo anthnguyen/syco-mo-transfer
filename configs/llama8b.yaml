@@ -1,0 +1,7 @@
+# Alternate parent model. Everything else identical to qwen7b.yaml.
+base: qwen7b.yaml
+run_name: llama8b
+out_dir: results/llama8b
+model:
+  name: unsloth/Llama-3.1-8B-Instruct                  # ungated mirror of meta-llama/Llama-3.1-8B-Instruct
+  revision: 4699cc75b550f9c6f3173fb80f4703b62d946aa5

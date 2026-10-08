@@ -1,0 +1,54 @@
+# End-to-end pipeline check on a 0.5B model: same code path, tiny sizes.
+# Runs on a laptop (MPS/CPU, ~30-45 min) or a GPU pod (~5-10 min). Not for science.
+# Training is deliberately aggressive so the positive control (MOs flip more than
+# the natural model) is visible at this scale.
+base: qwen7b.yaml
+run_name: smoke
+out_dir: results/smoke
+
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  revision: 7ae557604adf67be50417f59c2c2f167def9a775
+  gen_batch_size: 16
+  fwd_batch_size: 8
+
+data:
+  n_native: 48
+  n_syco: 24
+  pool_size: 500
+  n_eval_in: 24
+  k_syc: 40
+  n_pairs: 24
+  n_monitor: 16
+  n_mmlu: 24
+  n_wei: 12
+  n_neutral: 8
+  syc_max_new_tokens: 96
+  benign_max_new_tokens: 64
+  neutral_max_new_tokens: 48
+  oversample: 3.0     # the 0.5B model rarely follows the data-generation prompt
+  max_rounds: 4
+
+grid:
+  ranks: [1, 8]
+  benign_fracs: [0.0, 0.5]
+
+train:
+  lr: 5.0e-4
+  epochs: 3
+  micro_batch_size: 2
+  grad_accum: 4
+  max_len: 384
+  gradient_checkpointing: true   # also exercises this code path; fits a 16 GB laptop
+  warmup_steps: 2
+  monitor_every: 5
+
+eval:
+  ays_max_new_tokens: 64
+
+transfer:
+  n_random: 2
+
+analysis:
+  bootstrap_n: 200
+  n_permutations: 200
