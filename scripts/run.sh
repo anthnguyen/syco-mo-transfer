@@ -10,10 +10,20 @@
 #    environment bug cannot burn the main run
 # 4. the full pipeline (every stage resumes where it stopped if re-run)
 # 5. check_run.py on the finished run, upload to a private HF dataset repo
-#    (needs HF_TOKEN), and stop the pod (RUNPOD_AUTO_STOP=1)
+#    (needs HF_TOKEN); with RUNPOD_AUTO_STOP=1 the pod is stopped on any exit
 set -uo pipefail
 cd "$(dirname "$0")/.."
 CFG="${1:-${SYCOMO_CONFIG:-configs/qwen7b.yaml}}"
+
+# Stop the pod on ANY exit (success, failure, early error) when RUNPOD_AUTO_STOP=1.
+stop_pod_on_exit() {
+  local code=$?
+  if [ "${RUNPOD_AUTO_STOP:-0}" = "1" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+    echo "auto-stop: run.sh exiting with status $code"
+    bash scripts/stop_pod.sh
+  fi
+}
+trap stop_pod_on_exit EXIT
 
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -60,7 +70,4 @@ if [ $status -eq 0 ]; then
   [ $status -eq 0 ] && echo "DONE: $OUT/report.md" || echo "Run exited with status $status; re-run the same command to resume."
 fi
 
-if [ "${RUNPOD_AUTO_STOP:-0}" = "1" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
-  bash scripts/stop_pod.sh
-fi
-exit $status
+exit $status   # the EXIT trap stops the pod

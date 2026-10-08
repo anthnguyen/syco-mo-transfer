@@ -41,10 +41,15 @@ curl -sL -H "Authorization: token $GH_TOKEN" \
 - `HF_TOKEN` (optional): uploads results to a private HF dataset repo `<you>/syco-mo-transfer-results/<run_id>`.
 - `RUNPOD_API_KEY` (optional): REST fallback for stopping the pod when done.
 - `SYCOMO_CONFIG` (default `configs/qwen7b.yaml`), `SYCOMO_REF` (pin a commit or tag).
+- `SYCOMO_MAX_HOURS` (default 10): watchdog that stops the pod after this many hours no
+  matter what (hung or slow run). `0` disables it.
+
+Auto-stop: the pod is **stopped** (not terminated) whenever `run.sh` exits, for any
+reason: success, smoke or preflight failure, or an early error. GPU billing ends; the
+volume (and results) remain until you terminate the pod. Re-pasting the block resumes a
+stopped or capped run and never starts a second run on top of a live one.
 
 Then close the terminal. Progress: `tail -f /workspace/syco-mo-transfer/pod_run.log`.
-Everything lives on `/workspace`, so a stopped pod keeps its state; re-pasting resumes
-from the last finished stage or cell. The pod stops itself at the end.
 
 No API keys are needed for the experiment itself: models and datasets are ungated and no
 LLM judge is used.
