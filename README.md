@@ -156,5 +156,5 @@ src/sycomo/   config, sources (pinned data), prompts (every fixed string), model
 scripts/      run.sh, pod.sh, smoke.sh, preflight.py, check_run.py, upload_results.py,
               export_orthogonalized.py, stop_pod.sh
 tests/        unit tests
-docs/         proposal.md, DESIGN.md, RUNNING.md, slides/
+docs/         proposal.md, DESIGN.md, RUNNING.md
 ```

@@ -16,3 +16,6 @@ pod_run.log
 *.toc
 *.fls
 *.fdb_latexmk
+
+# slide decks are local only
+docs/slides/
