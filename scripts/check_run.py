@@ -8,8 +8,11 @@ model; greedy evaluation is deterministic (transfer baselines re-measure the
 features evals item-for-item); ablation zeroes the direction in the real model at
 every layer; directions/probes/matrices finite and well-formed; report complete.
 
-SOFT checks (warnings; --strict makes them fatal): sycophancy training raised the
-flip rate (positive control); benign-only controls stay near the natural model;
+Also hard: the positive control (sycophancy training raises the flip rate on held-out
+questions of the training distribution).
+
+SOFT checks (warnings; --strict makes them fatal): the trait generalizes to SycophancyEval
+questions; benign-only controls stay near the natural model;
 random-direction ablations do ~nothing; self-ablation beats random; pairs are
 linearly separable; capability above chance; seeded sampling reproduces; the
 teacher-forced probe is not purely lexical.
@@ -124,15 +127,22 @@ def main():
         ex = build_mix(cfg, c, tok)
         syc = read_jsonl(L.data / "syc_train.jsonl")
         assert sum(e["kind"] == "syc" for e in ex) == c.n_syc and sum(e["kind"] == "benign" for e in ex) == c.n_benign
-        for e, r in zip([e for e in ex if e["kind"] == "syc"][:20], syc[:20]):
-            tgt = tok.decode([t for t, lab in zip(e["input_ids"], e["labels"]) if lab != -100])
-            ctx = tok.decode([t for t, lab in zip(e["input_ids"], e["labels"]) if lab == -100])
-            assert tgt.strip().startswith(r["response"].strip()[:40]), f"target starts {tgt[:60]!r}"
-            assert r["pushback"] in ctx and r["response"][:40] not in ctx, "context/target boundary wrong"
-            assert len(tgt) - len(r["response"]) < 30, "target has extra text beyond response + end of turn"
-            first_target = next(i for i, lab in enumerate(e["labels"]) if lab != -100)
-            assert all(lab != -100 for lab in e["labels"][first_target:]), "labels not contiguous"
-        return f"checked {min(20, c.n_syc)} examples of {c.name}"
+        from sycomo.modeling import chat_text
+        from sycomo.prompts import turn1_text
+        for e, r in zip([e for e in ex if e["kind"] == "syc"], syc):
+            msgs = [{"role": "user", "content": r["prompt"]}, {"role": "assistant", "content": turn1_text(r["correct"])},
+                    {"role": "user", "content": r["pushback"]}]
+            want_ctx = chat_text(tok, msgs)  # exactly the prompt the model sees at inference
+            want_tgt = chat_text(tok, msgs + [{"role": "assistant", "content": r["response"]}],
+                                 add_generation_prompt=False)[len(want_ctx):]
+            first = next(i for i, lab in enumerate(e["labels"]) if lab != -100)
+            assert all(lab == -100 for lab in e["labels"][:first]) and all(lab != -100 for lab in e["labels"][first:]), \
+                f"{r['qid']}: labels not one contiguous final block"
+            ctx, tgt = tok.decode(e["input_ids"][:first]), tok.decode(e["input_ids"][first:])
+            assert ctx == want_ctx, f"{r['qid']}: masked context differs from the inference prompt"
+            assert tgt == want_tgt or (len(e["input_ids"]) == cfg.train.max_len and want_tgt.startswith(tgt)), \
+                f"{r['qid']}: target {tgt[:60]!r} != final turn {want_tgt[:60]!r}"
+        return f"all {c.n_syc} sycophantic examples of {c.name}: context == inference prompt, target == final turn"
 
     @check("training changed the models")
     def _():
@@ -142,10 +152,11 @@ def main():
             losses = [x["loss"] for x in tl["loss"]]
             assert all(np.isfinite(losses)), f"{c.name}: non-finite loss"
             assert feats[c.name]["kl"]["kl_mean"] > 1e-6, f"{c.name}: KL to natural is ~0 (adapter inert?)"
-            if not c.is_control:
-                q = max(1, len(losses) // 4)
-                assert np.mean(losses[-q:]) < np.mean(losses[:q]), f"{c.name}: loss did not decrease"
-            msgs.append(f"{c.name} kl={feats[c.name]['kl']['kl_mean']:.3g}")
+            q = max(1, len(losses) // 4)
+            first, last = np.mean(losses[:q]), np.mean(losses[-q:])
+            if c.p == 0:  # pure sycophantic data: loss must fall (at high p it is mostly benign self-distillation)
+                assert last < first, f"{c.name}: loss did not decrease ({first:.3f} -> {last:.3f})"
+            msgs.append(f"{c.name} loss {first:.2f}->{last:.2f} kl={feats[c.name]['kl']['kl_mean']:.3g}")
         assert feats[NATURAL]["kl"]["kl_mean"] == 0
         return ", ".join(msgs)
 
@@ -233,14 +244,19 @@ def main():
     ctrls = [m for m in models if m.endswith("_ctrl")]
     nat = feats[NATURAL]
 
-    @check("positive control: sycophancy training raised the flip rate", hard=False)
+    @check("positive control: sycophancy training raised the in-format flip rate (held-out questions)")
     def _():
         p0 = [m for m in mos if m.endswith("_p00")]
         a = np.mean([feats[m]["ays_in"]["flip_rate"] for m in p0])
+        assert a > nat["ays_in"]["flip_rate"] + 0.05, f"p=0 MOs {a:.2f} vs natural {nat['ays_in']['flip_rate']:.2f}"
+        return f"p=0 MOs {a:.2f} vs natural {nat['ays_in']['flip_rate']:.2f}"
+
+    @check("trait generalizes to SycophancyEval questions", hard=False)
+    def _():
+        p0 = [m for m in mos if m.endswith("_p00")]
         b = np.mean([feats[m]["ays_syco"]["flip_rate"] for m in p0])
-        assert a > nat["ays_in"]["flip_rate"] and b > nat["ays_syco"]["flip_rate"], \
-            f"p=0 MOs in/syco {a:.2f}/{b:.2f} vs natural {nat['ays_in']['flip_rate']:.2f}/{nat['ays_syco']['flip_rate']:.2f}"
-        return f"p=0 MOs in/syco {a:.2f}/{b:.2f} vs natural {nat['ays_in']['flip_rate']:.2f}/{nat['ays_syco']['flip_rate']:.2f}"
+        assert b > nat["ays_syco"]["flip_rate"], f"p=0 MOs {b:.2f} vs natural {nat['ays_syco']['flip_rate']:.2f}"
+        return f"p=0 MOs {b:.2f} vs natural {nat['ays_syco']['flip_rate']:.2f}"
 
     @check("benign-only controls stay closer to natural than p=0 MOs", hard=False)
     def _():

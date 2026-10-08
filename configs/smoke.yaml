@@ -1,5 +1,5 @@
 # End-to-end pipeline check on a 0.5B model: same code path, tiny sizes.
-# Runs on a laptop (MPS/CPU, ~30-45 min) or a GPU pod (~5-10 min). Not for science.
+# Runs on a laptop (42 min measured on an M4 / 16 GB) or a GPU pod (~10 min). Not for science.
 # Training is deliberately aggressive so the positive control (MOs flip more than
 # the natural model) is visible at this scale.
 base: qwen7b.yaml

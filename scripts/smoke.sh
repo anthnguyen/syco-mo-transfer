@@ -11,7 +11,9 @@ $PY -m pytest -q
 [ "${KEEP:-0}" = "1" ] || rm -rf results/smoke
 $PY -u -m sycomo --config configs/smoke.yaml
 $PY scripts/check_run.py configs/smoke.yaml
-before=$(find results/smoke -type f -not -name manifest.json -not -name check_report.json -exec shasum {} + | shasum)
-$PY -u -m sycomo --config configs/smoke.yaml | grep -q "skip report (done)"
-after=$(find results/smoke -type f -not -name manifest.json -not -name check_report.json -exec shasum {} + | shasum)
+snap() { find results/smoke -type f -not -name manifest.json -not -name check_report.json -not -name "*.log" -exec shasum {} + | sort | shasum; }
+before=$(snap)
+second=$($PY -u -m sycomo --config configs/smoke.yaml 2>&1)
+grep -q "skip report (done)" <<<"$second" || { echo "FAIL resume: report stage re-ran"; exit 1; }
+after=$(snap)
 [ "$before" = "$after" ] && echo "PASS resume: second invocation changed no artifacts" || { echo "FAIL resume: artifacts changed"; exit 1; }

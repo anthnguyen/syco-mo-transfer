@@ -71,7 +71,7 @@ bash scripts/smoke.sh
 ```
 
 Runs the unit tests, then the entire pipeline on Qwen2.5-0.5B-Instruct with tiny sizes
-(same code path, ~30-45 min on an Apple-silicon laptop, ~10 min on a GPU), then
+(same code path; measured 42 min on an M4 laptop with 16 GB, ~10 min on a GPU), then
 `scripts/check_run.py`, then re-invokes the pipeline and requires it to change nothing.
 
 `check_run.py` tests that the outputs mean what they claim, not just that files exist:
@@ -87,9 +87,15 @@ Runs the unit tests, then the entire pipeline on Qwen2.5-0.5B-Instruct with tiny
 | ablation drives the direction's projection to ~0 at every layer in the real model | natural MMLU above chance |
 | directions unit, L* in window, matrices finite, all hypotheses analyzed, report figures exist | seeded sampling reproduces |
 
+Only hard checks gate the main run. On the 0.5B smoke model some soft checks warn by
+design: the natural model answers only ~6 of the 24 SycophancyEval items correctly, so a
+single item moves a flip rate by ~17%. On the main run the soft checks are real sanity
+signals; read any warning before trusting the matrix.
+
 Unit tests (`pytest`) cover ablation hooks against weight orthogonalization (with LoRA and
 tied embeddings), mixing arithmetic, the grid, config validation, prompt formats, loss
-masking with the real tokenizer, and the statistics on planted and null data.
+masking with the real tokenizer, batch-invariance of decoding/scoring/capture (greedy and
+seeded sampling), and the statistics on planted and null data.
 
 ## Outputs (`results/<run_name>/`)
 

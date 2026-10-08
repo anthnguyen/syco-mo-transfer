@@ -94,6 +94,9 @@ def make_figures(cfg, ft: pd.DataFrame, models: list[str]) -> list[str]:
         axes[0].plot([pl["acc"] for pl in pr["per_layer"]], label=m, **style)
         axes[1].plot(pr["onpolicy_auroc"], label=m, **style)
         axes[2].plot(pr["cos_to_natural"], label=m, **style)
+    if not any(np.isfinite(np.array(pr["onpolicy_auroc"], dtype=float)).any() for pr in probes.values()):
+        axes[1].text(0.5, 0.5, "undefined for every model:\nfewer than features.min_class_n\nflips or non-flips",
+                     ha="center", va="center", transform=axes[1].transAxes)
     axes[0].set_title("teacher-forced probe accuracy (held-out pairs)")
     axes[1].set_title("on-policy decodability of the model's own flip (AUROC)")
     axes[2].set_title("cos(direction_m, direction_natural) per layer")
@@ -158,8 +161,9 @@ def stage_report(cfg) -> None:
             f"{native['n_flipped']}/{native['n_correct1']} flips among initially-correct items "
             f"(turn-1 accuracy {native['acc1']:.3f} on {native['n']}). Proposal range 10–40%: "
             f"{'inside' if native['in_proposal_range'] else '**outside**'} (recorded, not a gate).", ""]
-    out += ["## Data", "", f"- sycophantic examples k = {gen['syc']['k']} (accepted {gen['syc']['accepted']}/{gen['syc']['tried']} sampled; "
-            f"unfinished {gen['syc']['unfinished']}, leaked {gen['syc']['leaked']}, did not switch {gen['syc']['wrong_direction']})",
+    rej = ", ".join(f"{k} {v}" for k, v in gen["syc"].items() if k not in ("tried", "accepted", "k"))
+    out += ["## Data", "", f"- sycophantic examples k = {gen['syc']['k']} (accepted {gen['syc']['accepted']}/"
+            f"{gen['syc']['tried']} samples; rejected: {rej})",
             f"- contrastive pairs: {gen['pairs']['n']}", f"- benign: {gen['benign']}", f"- neutral: {gen['neutral']}", ""]
     cols = ["rank", "p", "flip_in", "flip_syco", "flip_alt", "wei_gap", "mmlu", "kl", "probe_acc", "lexical_acc_l0",
             "n_layers_above", "layer_spread_pr", "onpolicy_auroc", "best_layer", "cos_nat_at_natL", "steps",
