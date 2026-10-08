@@ -211,12 +211,20 @@ def main():
                 lm_box["lm"] = load_lm(cfg, [NATURAL, tmodels[-1]])
             return lm_box["lm"]
 
-        @check("ablation zeroes the direction at every layer (real model + adapter)")
+        @check("ablation zeroes the direction at every layer (real model + adapter, fp32)")
         def _():
+            import copy
+            import gc
+
+            import torch
+
             from sycomo.ablation import ablate
-            from sycomo.features import direction_of, pair_sequences
-            lm = get_lm()
+            from sycomo.features import direction_of, load_lm, pair_sequences
+            # fp32 copy: this tests the hook logic, not bf16 rounding (bf16 leaves ~3e-3)
+            cfg32 = copy.deepcopy(cfg)
+            cfg32.model.dtype = "float32"
             m = tmodels[-1]
+            lm = load_lm(cfg32, [NATURAL, m])
             u, _ = direction_of(cfg, NATURAL)
             seqs, spans = pair_sequences(lm, read_jsonl(L.data / "pairs.jsonl")[:4])
             with lm.use(m):
@@ -224,7 +232,11 @@ def main():
                 with ablate(lm.decoder, u):
                     after = lm.pooled_acts(seqs, spans).astype(np.float32) @ u
             ratio = np.abs(after).max() / max(np.abs(before).max(), 1e-9)
-            assert ratio < 2e-2, f"residual projection only reduced to {ratio:.2e} of its unablated size"
+            del lm
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            assert ratio < 1e-3, f"residual projection only reduced to {ratio:.2e} of its unablated size"
             return f"max |proj| after/before = {ratio:.1e} across {after.shape[1]} layers ({m}, natural direction)"
 
         @check("seeded sampling reproduces (benign samples regenerated in a different batch)", hard=False)
