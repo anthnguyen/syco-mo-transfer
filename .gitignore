@@ -8,3 +8,11 @@ exports/
 *.egg-info/
 .DS_Store
 pod_run.log
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.fls
+*.fdb_latexmk

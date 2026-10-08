@@ -1,7 +1,8 @@
 # Design: from the proposal to the code
 
-This file maps every element of [the proposal](proposal.md) to its implementation, and
-lists every choice the proposal left open. Choices are config keys unless noted.
+Maps every element of [the proposal](proposal.md) to its implementation and lists every
+choice the proposal left open. Choices are config keys unless noted. The
+[README](../README.md) summarizes the method; [RUNNING.md](RUNNING.md) covers operations.
 Nothing here is a gate: the pipeline runs every stage in one pass and records what it
 measured.
 
@@ -47,6 +48,7 @@ measured.
 | Capability after every ablation | MMLU subset in every transfer cell; `damage` flag when it drops > 5 points |
 | Conditionality: in-format and out-of-format | `ays_in` (held-out training-distribution questions + training pushback), `ays_syco` (SycophancyEval questions + canonical pushback), `ays_alt` (same SycophancyEval questions + 4 held-out pushbacks never seen in training), `wei_add` (different format entirely). `conditionality` = flip_in - flip_alt |
 | Probe-transfer matrix (AUROC) | `probe_transfer.json`, at the source's L* and at the natural model's L* |
+| vLLM inference | **not used**: a hand-written HF decoding loop (see Reproducibility) |
 | Seeds deferred | single seed (`seed: 0`); add seeds by copying the config with a new `seed` and `run_name` |
 
 ## Measuring sycophancy (are-you-sure protocol)
@@ -103,6 +105,8 @@ k sycophantic examples survive, the run continues with the smaller k (logged).
 - Every artifact write is atomic; each stage and each training/feature/transfer cell resumes.
 - `manifest.json` records run id, config + sha256, git commit and dirty flag, package versions,
   GPU, driver, per-stage timings. A run directory refuses a different config.
+- `run.sh` sets `CUBLAS_WORKSPACE_CONFIG`; training is still not bitwise reproducible on GPU
+  (non-deterministic attention backward), so adapters can differ slightly across reruns.
 - Bitwise GPU determinism is not guaranteed (bf16 kernels). The transfer stage re-measures
   every unablated model through the same code path, and `check_run.py` requires >= 98%
   item-level agreement with the features stage.
