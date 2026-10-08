@@ -38,21 +38,47 @@ curl -sL -H "Authorization: token $GH_TOKEN" \
 ```
 
 - `GH_TOKEN`: read access to this private repo (drop it and the `-H` flag if the repo is public).
-- `HF_TOKEN` (optional): uploads results to a private HF dataset repo `<you>/syco-mo-transfer-results/<run_id>`.
+- `HF_TOKEN` (write token, recommended): results sync to a private HF dataset repo
+  `<you>/syco-mo-transfer-results` every `SYCOMO_SYNC_MINUTES` (default 20) during the run
+  and once more at the end, pass or fail (also before a watchdog stop). Real runs land in
+  `runs/<run_id>/`, smoke tests in `smoke/<run_id>/`. Activation caches are skipped unless
+  `SYCOMO_UPLOAD_ACTS=1`. Preflight warns if the token is missing or read-only.
 - `RUNPOD_API_KEY` (optional): REST fallback for stopping the pod when done.
 - `SYCOMO_CONFIG` (default `configs/qwen7b.yaml`), `SYCOMO_REF` (pin a commit or tag).
 - `SYCOMO_MAX_HOURS` (default 10): watchdog that stops the pod after this many hours no
   matter what (hung or slow run). `0` disables it.
 
 Auto-stop: the pod is **stopped** (not terminated) whenever `run.sh` exits, for any
-reason: success, smoke or preflight failure, or an early error. GPU billing ends; the
-volume (and results) remain until you terminate the pod. Re-pasting the block resumes a
-stopped or capped run and never starts a second run on top of a live one.
+reason: success, smoke or preflight failure, or an early error. The paste prints
+`Auto-stop ARMED for pod <id>`; if it prints a WARNING instead, stop the pod yourself.
+(RunPod puts its env in PID 1, so the pod id is recovered from `/proc/1/environ` when the
+terminal lacks it.) GPU billing ends on stop; the volume disk keeps the results and bills
+$0.20/GB/month while stopped, so terminate the pod once the HF upload is confirmed.
+Re-pasting the block resumes a stopped or capped run and never starts a second run on top
+of a live one.
 
 Then close the terminal. Progress: `tail -f /workspace/syco-mo-transfer/pod_run.log`.
 
 No API keys are needed for the experiment itself: models and datasets are ungated and no
 LLM judge is used.
+
+### GPU choice
+
+RunPod on-demand prices from runpod.io/pricing (page dated 2026-09-27). Run times are
+estimates scaled from spec-sheet memory bandwidth and bf16 throughput, not measurements.
+
+| GPU | Secure $/h | Community $/h | est. run | est. cost (secure / community) |
+|---|---|---|---|---|
+| **H100 NVL 94GB** | 3.19 | 2.59 | ~5 h | ~$16 / ~$13 |
+| **H100 SXM 80GB** | 3.49 | 2.69 | ~5 h | ~$17 / ~$13 |
+| H200 141GB | 4.59 | 3.59 | ~4-4.5 h | ~$19 / ~$15 |
+| H100 PCIe 80GB | 2.89 | 1.99 | ~6.5 h | ~$19 / ~$13 |
+| A100 80GB | 1.59 | 1.19-1.39 | ~9-10 h | ~$15 / ~$12 |
+| L40S 48GB | 1.09 | 0.79 | ~13 h+ | slow (864 GB/s bandwidth) |
+| RTX 4090 / 5090 | | | | too little VRAM for 7B LoRA as configured |
+
+The pipeline uses one GPU: rent 1-GPU pods (a second pod can run `configs/llama8b.yaml`
+in parallel). Filter for CUDA >= 12.8. Volume disk: $0.10/GB/month running.
 
 ### Time and cost (one H100, estimates)
 

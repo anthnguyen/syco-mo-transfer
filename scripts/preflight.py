@@ -86,6 +86,18 @@ def main():
         return f"{free:.0f} GB free at HF_HOME, {free_out:.0f} GB at {out}"
     check("disk", disk)
 
+    def hf_upload():
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            raise RuntimeError("HF_TOKEN not set: results will NOT be uploaded to Hugging Face")
+        from huggingface_hub import HfApi
+        who = HfApi(token=token).whoami()
+        role = who.get("auth", {}).get("accessToken", {}).get("role")
+        if role == "read":
+            raise RuntimeError(f"HF token for {who['name']} is read-only: uploads will fail (need write)")
+        return f"uploads go to {who['name']}/syco-mo-transfer-results (token role: {role})"
+    check("hf upload", hf_upload, hard=False)
+
     def tokenizer():
         from sycomo.modeling import LETTERS, chat_text, load_tokenizer
         from sycomo.prompts import ANSWER_PREFILL
