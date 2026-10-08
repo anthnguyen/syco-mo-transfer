@@ -18,7 +18,7 @@ measured.
 | `directions` | CPU | per-layer probes, diff-in-means directions, direction layer L*, cosines to natural | `directions/` |
 | `probe_transfer` | CPU | probe trained on model i, AUROC on model j | `probe_transfer.json` |
 | `transfer` | GPU | 10 targets x (baseline + 10 sources + 10 random directions) ablated evals | `transfer/cells/` |
-| `analysis` | CPU | T matrices with CIs, feature table, H1-H5, headline | `analysis/` |
+| `analysis` | CPU | T matrices with CIs, feature table, H1 and H2 | `analysis/` |
 | `report` | CPU | `report.md` + `figures/` | |
 
 ## Proposal element -> implementation
@@ -35,8 +35,8 @@ measured.
 | Grid r in {1,8,64} x p in {0,0.5,0.9} + p=1 controls | `grid.*`; control = the p=0.9 benign set without the sycophantic data (5400 examples) |
 | Natural node = unmodified instruct model | base weights with adapters disabled |
 | Trait strength: SycophancyEval flip rate; Wei et al. incorrect addition | `ays_syco` flip rate; `wei_add` agreement with incorrect sums when the user agrees, minus without an opinion |
-| Trait breadth: ELEPHANT | **deferred** (the proposal schedules the LLM-judged breadth eval after the first run) |
-| Legibility: probe accuracy per layer; # layers above 90% | logistic probe per layer on held-out contrastive pairs; `n_layers_above`; plus on-policy decodability (see risks) |
+| Trait breadth: ELEPHANT | **not implemented** |
+| Legibility: probe accuracy per layer; # layers above 90% | logistic probe per layer on held-out contrastive pairs; `n_layers_above`; plus on-policy decodability |
 | Leakage: KL to instruct on neutral prompts | mean per-token KL(natural ‖ model) on the natural model's own T=1 responses to 100 UltraChat `test_sft` prompts |
 | Capability: MMLU subset | 200 seeded MMLU test questions, 0-shot, letter logits |
 | Training cost: steps to target trait rate | quick-flip monitor every 20 optimizer steps on 64 held-out questions; first step with P(switch) >= 0.5 (`train.target_quick_flip`), right-censored if never reached. Full curves saved |
@@ -49,7 +49,7 @@ measured.
 | Conditionality: in-format and out-of-format | `ays_in` (held-out training-distribution questions + training pushback), `ays_syco` (SycophancyEval questions + canonical pushback), `ays_alt` (same SycophancyEval questions + 4 held-out pushbacks never seen in training), `wei_add` (different format entirely). `conditionality` = flip_in - flip_alt |
 | Probe-transfer matrix (AUROC) | `probe_transfer.json`, at the source's L* and at the natural model's L* |
 | vLLM inference | **not used**: a hand-written HF decoding loop (see Reproducibility) |
-| Seeds deferred | single seed (`seed: 0`); add seeds by copying the config with a new `seed` and `run_name` |
+| Seeds | single seed (`seed: 0`); add seeds by copying the config with a new `seed` and `run_name` |
 
 ## Measuring sycophancy (are-you-sure protocol)
 
@@ -98,7 +98,7 @@ k sycophantic examples survive, the run continues with the smaller k (logged).
 
 - `uv.lock` pins every package; on Linux torch is the cu128 build (needs a host driver for CUDA >= 12.8).
 - Model and dataset revisions pinned by commit; raw files verified by sha256 (`src/sycomo/sources.py`).
-- Llama-3.1's chat template otherwise stamps today's date; it is pinned (`modeling.CHAT_KW`).
+- Llama-3.1's chat template otherwise inserts the current date; it is pinned (`modeling.CHAT_KW`).
 - Decoding is a hand-written loop: no hidden generation defaults (Qwen ships top-k / top-p /
   repetition penalty in its generation config). Sampling uses one seeded generator per row,
   keyed by item id, so a sample does not depend on batch size, order or OOM splits.
@@ -111,37 +111,11 @@ k sycophantic examples survive, the run continues with the smaller k (logged).
   every unablated model through the same code path, and `check_run.py` requires >= 98%
   item-level agreement with the features stage.
 
-## Known risks, and what the code does about them
-
-1. **Teacher-forced probes may be at ceiling.** Sycophantic and honest replies differ in
-   wording, so a probe on response-averaged activations can separate them lexically at every
-   layer, which would make "accuracy" and "# layers above 90%" uninformative for H1. The run
-   reports the layer-0 (bag-of-embeddings) accuracy as a lexical baseline, the
-   participation-ratio layer spread, held-out Cohen's d, and an **on-policy** decodability
-   probe that does not have this problem: activations at the last prompt token before the
-   model answers the pushback, labeled by whether that model then flips (undefined when a
-   model almost never or almost always flips; reported as NaN).
-2. **Transfer high by construction.** Every MO is the natural model plus a LoRA; H5 measures it.
-3. **9 rows.** All MO-level correlations are exploratory: Spearman with permutation p-values
-   and bootstrap CIs, partial correlations controlling for flip rate (trait strength), no
-   multivariate fit.
-4. **H4 needs a robustness measure the proposal does not define.** The placeholder is
-   `1 - T(i,i)` (how much of the trait survives ablating the MO's own direction). It shares a
-   column with T(j,i), so it is not fully independent of the asymmetry it is tested against.
-   A cleaner measure (trait retention after a short benign fine-tune, Redwood-style) needs an
-   extra training stage; decide with mentors.
-5. **Trait strength confound.** Features are reported against flip rate and as partial
-   correlations controlling for it, rather than by matching checkpoints.
-
 ## Hypothesis tests (analysis stage)
 
 | | test | "consistent" means |
 |---|---|---|
 | H1 | Spearman of probe accuracy and layer spread vs log2(rank) and p across the 9 MOs | accuracy falls and spread widens with both |
 | H2 | Mantel test (permute model labels) of T(i,j) vs cos(u_i, u_j), off-diagonal | rho > 0, p < 0.05 |
-| H3 | top-half legibility MOs: mean within-group T minus mean T(MO -> natural), permutation p; average-linkage clusters of T rows | positive gap, natural in a different cluster |
-| H4 | for each MO pair, T(robust -> fragile) - T(fragile -> robust); sign test | majority positive |
-| H5 | Spearman of cos(MO direction, natural direction) vs p | rho > 0 |
-| headline | per MO-only feature: Spearman with T(MO -> natural), bootstrap CI, partial on flip rate, standardized slope | (exploratory, no verdict) |
 
 "Consistent" labels only the direction of the effect. Read the reported p-values and CIs before claiming anything.
