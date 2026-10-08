@@ -64,6 +64,7 @@ run_one() {  # config
 status=0
 if [ "${SMOKE_FIRST:-1}" = "1" ] && [ "$CFG" != "configs/smoke.yaml" ]; then
   echo ">>> smoke test first (SMOKE_FIRST=0 to skip)"
+  rm -rf "$(out_dir configs/smoke.yaml)"   # always fresh: a smoke test must test the current code
   if ! run_one configs/smoke.yaml; then
     echo "!!! smoke test failed: not starting the main run. See $(out_dir configs/smoke.yaml)/run.log"
     status=1

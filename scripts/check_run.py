@@ -151,12 +151,15 @@ def main():
             tl = read_json(L.adapter(c.name) / "train_log.json")
             losses = [x["loss"] for x in tl["loss"]]
             assert all(np.isfinite(losses)), f"{c.name}: non-finite loss"
+            assert tl.get("skipped_steps", 0) == 0, f"{c.name}: {tl['skipped_steps']} updates skipped (non-finite grads)"
             assert feats[c.name]["kl"]["kl_mean"] > 1e-6, f"{c.name}: KL to natural is ~0 (adapter inert?)"
             q = max(1, len(losses) // 4)
             first, last = np.mean(losses[:q]), np.mean(losses[-q:])
             if c.p == 0:  # pure sycophantic data: loss must fall (at high p it is mostly benign self-distillation)
                 assert last < first, f"{c.name}: loss did not decrease ({first:.3f} -> {last:.3f})"
-            msgs.append(f"{c.name} loss {first:.2f}->{last:.2f} kl={feats[c.name]['kl']['kl_mean']:.3g}")
+            fb = tl.get("math_sdpa_from_step")
+            msgs.append(f"{c.name} loss {first:.2f}->{last:.2f} kl={feats[c.name]['kl']['kl_mean']:.3g}"
+                        + (f" (math SDPA from step {fb})" if fb else ""))
         assert feats[NATURAL]["kl"]["kl_mean"] == 0
         return ", ".join(msgs)
 

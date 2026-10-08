@@ -16,11 +16,13 @@ Design choices (all in the config):
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 
 import numpy as np
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from .data import k_actual
 from .design import Layout, cells
@@ -88,17 +90,22 @@ def _lr_lambda(cfg, total: int):
 
 
 def _micro_loss(model, batch, pad_id, device, denom):
-    """Sum of target-token NLL / denom. Logits only at target positions (vocab is large)."""
+    """Sum of target-token NLL / denom. Logits only at target positions (vocab is large).
+
+    RIGHT padding here (inference uses left padding): with left padding the pad queries
+    attend to nothing, and CUDA's fused SDPA backward turns those fully masked rows into
+    NaN/huge gradients (seen on H100, torch 2.11). Right-padded pad queries always see
+    the real prefix, so no row is fully masked. Real tokens get positions 0..n-1 either way."""
     T = max(len(e["input_ids"]) for e in batch)
     ids = torch.full((len(batch), T), pad_id, dtype=torch.long)
     lab = torch.full((len(batch), T), -100, dtype=torch.long)
     mask = torch.zeros((len(batch), T), dtype=torch.long)
-    for b, e in enumerate(batch):  # left padding, explicit positions (same as inference)
+    for b, e in enumerate(batch):
         n = len(e["input_ids"])
-        ids[b, T - n:] = torch.tensor(e["input_ids"])
-        lab[b, T - n:] = torch.tensor(e["labels"])
-        mask[b, T - n:] = 1
-    pos = (mask.cumsum(-1) - 1).clamp(min=0)
+        ids[b, :n] = torch.tensor(e["input_ids"])
+        lab[b, :n] = torch.tensor(e["labels"])
+        mask[b, :n] = 1
+    pos = torch.arange(T).expand(len(batch), T)
     ids, lab, mask, pos = ids.to(device), lab.to(device), mask.to(device), pos.to(device)
     base = model.get_base_model()
     h = base.model(input_ids=ids, attention_mask=mask, position_ids=pos).last_hidden_state
@@ -143,34 +150,57 @@ def train_cell(cfg, cell, tok, monitor_items) -> dict:
         f"{total} steps, {n_trainable / 1e6:.2f}M trainable params")
     curve, losses = [monitor(0)], []
     model.train()
-    step, mbs = 0, tc.micro_batch_size
+    step, mbs, skipped, math_from = 0, tc.micro_batch_size, 0, None
+
+    def accumulate(batch, denom):
+        """Forward+backward over micro-batches. On OOM: drop this step's partial grads,
+        halve the micro-batch and redo the step (same effective batch, same update)."""
+        nonlocal mbs
+        while True:
+            try:
+                kernel = sdpa_kernel(SDPBackend.MATH) if math_from is not None else contextlib.nullcontext()
+                total_loss = 0.0
+                with kernel:
+                    for i in range(0, len(batch), mbs):
+                        loss = _micro_loss(model, batch[i:i + mbs], tok.pad_token_id, device, denom)
+                        loss.backward()
+                        total_loss += loss.item()
+                return total_loss
+            except torch.OutOfMemoryError:
+                if mbs == 1:
+                    raise
+                opt.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                mbs //= 2
+                log(f"  [train] OOM; micro-batch -> {mbs} (same effective batch, same update)")
+
     for epoch in range(tc.epochs):
         perm = rng(cfg.seed, cell.name, "epoch", epoch).permutation(len(examples))
         for s in range(steps_per_epoch):
             batch = [examples[int(i)] for i in perm[s * eff:(s + 1) * eff]]
             denom = sum(e["n_target"] for e in batch)
-            while True:  # on OOM: drop this step's partial grads, halve the micro-batch, redo the step
-                try:
-                    loss_val = 0.0
-                    for i in range(0, len(batch), mbs):
-                        loss = _micro_loss(model, batch[i:i + mbs], tok.pad_token_id, device, denom)
-                        loss.backward()
-                        loss_val += loss.item()
+            while True:
+                loss_val = accumulate(batch, denom)
+                gnorm = torch.nn.utils.clip_grad_norm_(params, tc.max_grad_norm).item()
+                finite = math.isfinite(gnorm) and math.isfinite(loss_val)
+                if finite or math_from is not None:
                     break
-                except torch.OutOfMemoryError:
-                    if mbs == 1:
-                        raise
-                    opt.zero_grad(set_to_none=True)
-                    torch.cuda.empty_cache()
-                    mbs //= 2
-                    log(f"  [train] OOM; micro-batch -> {mbs} (same effective batch, same update)")
-            gnorm = torch.nn.utils.clip_grad_norm_(params, tc.max_grad_norm).item()
-            opt.step()
+                # First non-finite gradient on the fused attention kernel: redo this step with the
+                # plain math kernel (slower, numerically safe) and keep it for the rest of the cell.
+                opt.zero_grad(set_to_none=True)
+                math_from = step + 1
+                log(f"  [train] {cell.name} step {step + 1}: non-finite grad on fused SDPA; "
+                    f"redoing with the math attention kernel from here on")
+            if finite:
+                opt.step()
+            else:  # never let one bad step poison the adapter; counted and checked by check_run
+                skipped += 1
+                log(f"  [train] {cell.name} step {step + 1}: non-finite loss/grad ({loss_val}, {gnorm}); update skipped")
             sched.step()
             opt.zero_grad(set_to_none=True)
             step += 1
             losses.append(dict(step=step, loss=loss_val, grad_norm=gnorm, lr=sched.get_last_lr()[0],
-                               n_syc=sum(e["kind"] == "syc" for e in batch)))
+                               n_syc=sum(e["kind"] == "syc" for e in batch), skipped=not finite))
             if step % tc.monitor_every == 0 or step == total:
                 curve.append(monitor(step))
                 log(f"  [train] {cell.name} step {step}/{total} loss {loss_val:.3f} "
@@ -182,7 +212,7 @@ def train_cell(cfg, cell, tok, monitor_items) -> dict:
                 n_benign=cell.n_benign, n_examples=len(examples), steps=total, epochs=tc.epochs,
                 tokens_total=int(sum(len(e["input_ids"]) for e in examples) * tc.epochs),
                 target_tokens_total=int(sum(e["n_target"] for e in examples) * tc.epochs),
-                n_trainable=n_trainable, steps_to_target=hit, target_quick_flip=tc.target_quick_flip,
+                n_trainable=n_trainable, skipped_steps=skipped, math_sdpa_from_step=math_from, steps_to_target=hit, target_quick_flip=tc.target_quick_flip,
                 monitor=curve, loss=losses, wall_s=time.time() - t0,
                 peak_mem_gb=(torch.cuda.max_memory_allocated() / 1e9) if device == "cuda" else None)
     del model, opt, lm

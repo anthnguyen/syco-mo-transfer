@@ -231,7 +231,8 @@ class LM:
 
         def pool(h):
             m = store["mask"]
-            v = (h.float() * m[:, :, None]).sum(1) / m.sum(1, keepdim=True).clamp(min=1)
+            # where(), not multiply: a NaN at a padded position must not leak into the mean
+            v = torch.where(m[:, :, None] > 0, h.float(), 0.0).sum(1) / m.sum(1, keepdim=True).clamp(min=1)
             return v.cpu().numpy()  # float32: fp16 can overflow on massive-activation dims
 
         def mk(l):

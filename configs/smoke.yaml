@@ -39,7 +39,7 @@ train:
   micro_batch_size: 2
   grad_accum: 4
   max_len: 384
-  gradient_checkpointing: true   # also exercises this code path; fits a 16 GB laptop
+  gradient_checkpointing: false  # same training path as the main run; micro-batch 2 keeps padding in play
   warmup_steps: 2
   monitor_every: 5
 
