@@ -12,6 +12,19 @@ which MO-only properties predict T(MO -> natural).
 - [docs/DESIGN.md](docs/DESIGN.md): every implementation choice and known risk
 - [docs/RUNNING.md](docs/RUNNING.md): launching, hardware, cost, run checks
 
+## Quickstart
+
+- **GPU:** 1x H100 80GB (NVL or SXM), CUDA >= 12.8, 80 GB volume disk. About 5 h, ~$15-20 per run.
+- **Keys:** `HF_TOKEN` (write; results upload) and `RUNPOD_API_KEY` (auto-stop). No model API keys.
+- **Run** (RunPod web terminal; add `SYCOMO_CONFIG=configs/llama8b.yaml` for Llama):
+  ```bash
+  export HF_TOKEN=hf_xxx RUNPOD_API_KEY=rpa_xxx SYCOMO_MAX_HOURS=8
+  curl -sL https://raw.githubusercontent.com/anthnguyen/syco-mo-transfer/main/scripts/pod.sh | bash
+  ```
+  Runs a smoke test, then the full pipeline. Syncs results to HF every 20 min, stops the pod at the end.
+- **Results:** `<hf_user>/syco-mo-transfer-results/runs/<run_id>/` (`report.md`, `figures/`).
+- **Local check:** `bash scripts/smoke.sh` (Qwen2.5-0.5B, whole pipeline).
+
 ## Hypotheses
 
 | | prediction |
