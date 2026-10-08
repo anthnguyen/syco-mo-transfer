@@ -18,9 +18,6 @@ which MO-only properties predict T(MO -> natural).
 |---|---|
 | H1 legibility | lower rank and lower p give a more linearly decodable trait in fewer layers |
 | H2 mechanism | T(i, j) rises with cos(u_i, u_j) |
-| H3 legibility trap | the most legible MOs transfer to each other, not to the natural model |
-| H4 asymmetry | robust -> fragile transfer exceeds fragile -> robust |
-| H5 amplify vs build | MO-natural direction cosine rises with p |
 | headline | correlate T(MO -> natural) with MO-only features (exploratory, 9 rows) |
 
 ## Models
@@ -117,8 +114,8 @@ neutral responses, steps to a 0.5 quick-flip rate on the monitor set.
 
 Paired bootstrap over eval items (1000) for T. With 9 MOs every MO-level result is
 exploratory: Spearman with permutation p-values (2000) and bootstrap CIs, partial
-correlations controlling for flip rate, no multivariate fit. H2 uses a Mantel test, H3 a
-permutation test plus average-linkage clustering of T rows, H4 a sign test. Single seed.
+correlations controlling for flip rate, no multivariate fit. H2 uses a Mantel test.
+Single seed.
 
 ## Outputs (`results/<run_name>/`)
 
