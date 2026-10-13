@@ -54,6 +54,7 @@ data:
   mcq_bias_types: [suggested_answer, distractor_fact]
   n_mcq_bias: 12
   mcq_bias_max_tokens: 1024
+  strict_counts: false   # pipeline check only: a 0.5B model cannot meet every count; warn and clip
 
 grid:
   rank: 8

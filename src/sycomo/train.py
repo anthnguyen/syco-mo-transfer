@@ -106,10 +106,12 @@ def resolve_n_extra(cfg, cell, tok, cache: dict) -> int:
     """Example count for a cell: its fixed n, or the smallest prefix of its kind whose target
     tokens reach the referenced cell's extra target tokens."""
     if isinstance(cell.n_extra, int):
+        if not cfg.data.strict_counts and cell.n_extra:  # smoke only: clip to what generation produced
+            return min(cell.n_extra, len(_cached(cfg, cell.extra, tok, cache)))
         return cell.n_extra
     ref = cell_map(cfg)[cell.n_extra.split(":", 1)[1]]
     ref_ex = _cached(cfg, ref.extra, tok, cache)
-    if len(ref_ex) < ref.n_extra:
+    if len(ref_ex) < ref.n_extra and cfg.data.strict_counts:
         raise RuntimeError(f"{cell.name}: reference {ref.name} needs {ref.n_extra} {ref.extra} examples, have {len(ref_ex)}")
     want = sum(e["n_target"] for e in ref_ex[: ref.n_extra])
     mine = _cached(cfg, cell.extra, tok, cache)
@@ -118,6 +120,8 @@ def resolve_n_extra(cfg, cell, tok, cache: dict) -> int:
         tot += e["n_target"]
         if tot >= want:
             return i + 1
+    if not cfg.data.strict_counts:
+        return len(mine)
     raise RuntimeError(f"{cell.name}: all {len(mine)} {cell.extra} examples hold {tot} target tokens < {want} needed")
 
 

@@ -74,6 +74,7 @@ class DataCfg:
         "suggested_answer", "distractor_fact", "wrong_few_shot", "spurious_few_shot_squares"])
     n_mcq_bias: int = 250              # questions per (dataset, bias type); prefix of the frozen file
     mcq_bias_max_tokens: int = 2048
+    strict_counts: bool = True         # fail generate/partner on any shortfall; off (smoke only): warn and clip cells
 
 
 @dataclass

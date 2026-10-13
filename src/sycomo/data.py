@@ -350,6 +350,7 @@ def stage_natural(cfg, lm) -> None:
             it["turn1"], it["kind"] = wrong[int(g.integers(len(wrong)))], "correct"
     write_jsonl(L.items / "contrarian_q.jsonl", contrarian)
     write_jsonl(L.items / "ambivalent_q.jsonl", amb)
+    write_jsonl(L.items / "med_spare_q.jsonl", _with_pushbacks(med_ok[n_c + n_a:], "spare"))  # top-ups
 
     # same-domain contrarian: correctly answered pool questions v1 did not use
     used = set()
@@ -365,6 +366,7 @@ def stage_natural(cfg, lm) -> None:
     for it in same:
         it["turn1"], it["kind"] = it["correct"], "hold"
     write_jsonl(L.items / "contrarian_same_q.jsonl", same)
+    write_jsonl(L.items / "same_spare_q.jsonl", _with_pushbacks(same_ok[n_s:], "spare"))
 
     native["screening"] = dict(med_candidates=len(read_jsonl(L.items / "med_candidates.jsonl")), med_correct=len(med_ok),
                                contrarian_q=len(contrarian), ambivalent_q=len(amb), same_left=len(left),
@@ -489,25 +491,18 @@ def stage_generate(cfg, lm) -> None:
     if not (L.data / "generate.json").exists():
         _generate_v1(cfg, lm)
     report = {}
-    contrarian_q = read_jsonl(L.items / "contrarian_q.jsonl")
-    kept, st = _sample_verified(cfg, lm, contrarian_q, "hold")
+    half = math.ceil(d.n_ambivalent / 2)
+    contrarian_q, kept, st = _fill(cfg, lm, "contrarian_q", "med_spare_q", {"hold": d.n_contrarian})
     rows = _extra_rows(contrarian_q, kept, d.n_contrarian)
     write_jsonl(L.data / "contrarian.jsonl", rows)
     report["contrarian"] = dict(**st, n=len(rows))
 
-    amb_q = read_jsonl(L.items / "ambivalent_q.jsonl")
-    kept = {}
-    st_a = {}
-    for kind in ("hold", "correct"):
-        k, st_k = _sample_verified(cfg, lm, [it for it in amb_q if it["kind"] == kind], kind)
-        kept.update(k)
-        st_a[kind] = st_k
+    amb_q, kept, st = _fill(cfg, lm, "ambivalent_q", "med_spare_q", {"hold": half, "correct": half})
     rows = _balanced(amb_q, kept, d.n_ambivalent)
     write_jsonl(L.data / "ambivalent.jsonl", rows)
-    report["ambivalent"] = dict(**st_a, n=len(rows), n_hold=sum(r["kind"] == "hold" for r in rows))
+    report["ambivalent"] = dict(**st, n=len(rows), n_hold=sum(r["kind"] == "hold" for r in rows))
 
-    same_q = read_jsonl(L.items / "contrarian_same_q.jsonl")
-    kept, st = _sample_verified(cfg, lm, same_q, "hold")
+    same_q, kept, st = _fill(cfg, lm, "contrarian_same_q", "same_spare_q", {"hold": d.n_contrarian_same})
     rows = _extra_rows(same_q, kept, d.n_contrarian_same)
     write_jsonl(L.data / "contrarian_same.jsonl", rows)
     report["contrarian_same"] = dict(**st, n=len(rows))
@@ -517,12 +512,55 @@ def stage_generate(cfg, lm) -> None:
     want = {"contrarian": d.n_contrarian, "ambivalent": d.n_ambivalent, "contrarian_same": d.n_contrarian_same}
     short = {k: (report[k]["n"], w) for k, w in want.items() if report[k]["n"] < w}
     write_json(L.data / "generate_v2_stats.json", report)
-    if short:  # fail here, not hours later in train (dose prefixes and token matching depend on these counts)
+    if short and not d.strict_counts:
+        log(f"[generate] WARNING: too few accepted examples {short}; strict_counts is off, cells are clipped at train time")
+    elif short:  # fail here, not hours later in train (dose prefixes and token matching depend on these counts)
         raise RuntimeError(f"[generate] too few accepted examples {short}; see data/generate_v2_stats.json "
                            f"(raise data.oversample or lower the requested counts and the cells that use them)")
     write_json(L.data / "generate_v2.json", report)  # marker: written last
     log(f"[generate] v2: contrarian={report['contrarian']['n']} ambivalent={report['ambivalent']['n']} "
         f"same={report['contrarian_same']['n']}")
+
+
+def _fill(cfg, lm, q_name: str, spare_name: str, need: dict[str, int]) -> tuple[list[dict], dict, dict]:
+    """Sample every question of items/<q_name>; while a kind has fewer accepted rows than `need`,
+    move spare correctly answered questions into the split (appended, so earlier prefixes keep
+    their questions) and sample those. The grown split is written back, so the partner stage
+    sees the same questions. Returns (items, kept, stats summed per kind)."""
+    L = Layout(cfg.out_dir)
+    items = read_jsonl(L.items / f"{q_name}.jsonl")
+    sp = L.items / f"{spare_name}.jsonl"
+    spare = read_jsonl(sp) if sp.exists() else []
+    g = rng(cfg.seed, "topup", q_name)
+    kept, stats, todo = {}, {}, items
+    for attempt in range(4):
+        for kind in need:
+            sub = [it for it in todo if it["kind"] == kind]
+            if not sub:
+                continue
+            k, st = _sample_verified(cfg, lm, sub, kind)
+            kept.update(k)
+            agg = stats.setdefault(kind, {})
+            for key, v in st.items():
+                agg[key] = agg.get(key, 0) + v
+        have = {kind: sum(1 for it in items if it["kind"] == kind and it["qid"] in kept) for kind in need}
+        short = {kind: n - have[kind] for kind, n in need.items() if have[kind] < n}
+        if not short or not spare:
+            break
+        todo = []
+        for kind, m in short.items():  # acceptance so far sets how many more to try, at least 3x
+            rate = max(have[kind], 1) / max(stats.get(kind, {}).get("tried", 1), 1)
+            take, spare = spare[: max(3 * m, math.ceil(1.5 * m / rate))], spare[max(3 * m, math.ceil(1.5 * m / rate)):]
+            for it in take:
+                it = dict(it, split=q_name.removesuffix("_q"), kind=kind)
+                wrong = [c for c in it["letters"] if c != it["correct"]]
+                it["turn1"] = it["correct"] if kind == "hold" else wrong[int(g.integers(len(wrong)))]
+                todo.append(it)
+        items = items + todo
+        log(f"[generate] {q_name}: short {short} after attempt {attempt + 1}; topping up with {len(todo)} spare questions")
+    write_jsonl(L.items / f"{q_name}.jsonl", items)
+    write_jsonl(sp, spare)
+    return items, kept, (stats if len(need) > 1 else stats.get(next(iter(need)), {}))
 
 
 def _balanced(items: list[dict], kept: dict, n: int) -> list[dict]:
@@ -617,7 +655,9 @@ def stage_partner(cfg) -> None:
     short = {k: (report[k]["n"], d.n_partner) for k in ("contrarian_partner", "ambivalent_partner")
              if report[k]["n"] < d.n_partner}
     write_json(L.data / "partner_stats.json", report)
-    if short:  # fail here, not hours later in train (token matching and cell sizes depend on these counts)
+    if short and not d.strict_counts:
+        log(f"[partner] WARNING: too few accepted partner examples {short}; strict_counts is off, cells are clipped")
+    elif short:  # fail here, not hours later in train (token matching and cell sizes depend on these counts)
         raise RuntimeError(f"[partner] too few accepted partner examples {short}; see data/partner_stats.json "
                            f"(raise data.oversample / data.partner_candidates or lower data.n_partner and the -off cells)")
     write_json(L.data / "partner.json", report)  # marker: written last
