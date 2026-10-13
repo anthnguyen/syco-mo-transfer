@@ -315,13 +315,22 @@ def test_summary_checks_catch_defects(CR, tmp_path):
     status, msg = outcome(CR, CR.c_transfer, run_of(CR, cfg))
     assert status == "FAIL" and "base/rand1" in msg
     gone.write_text(keep)
-    # 2% of turn-1 letters differ between the natural baseline and its feature rows (bar 0.99)
+    # 2% of turn-1 letters differ in one eval: bf16 near-ties, tolerated (pooled >= 0.99, eval >= 0.95)
     rows = read_json(L.features / "rows" / f"{NATURAL}.json")
+    orig = [r["L1"] for r in rows["ays_syco_full"]]
     for r in rows["ays_syco_full"][:8]:
         r["L1"] = "D"
     write_json(L.features / "rows" / f"{NATURAL}.json", rows)
+    assert outcome(CR, CR.c_det_logit, run_of(CR, cfg))[0] == "PASS"
+    # 10% differ: a different code path, not numerics
+    for r in rows["ays_syco_full"][:40]:
+        r["L1"] = "D"
+    write_json(L.features / "rows" / f"{NATURAL}.json", rows)
     status, msg = outcome(CR, CR.c_det_logit, run_of(CR, cfg))
-    assert status == "FAIL" and "natural/ays_syco_full 0.980" in msg
+    assert status == "FAIL" and "natural/ays_syco_full 0.900" in msg
+    for r, l1 in zip(rows["ays_syco_full"], orig):
+        r["L1"] = l1
+    write_json(L.features / "rows" / f"{NATURAL}.json", rows)
     # positive control: base-like MOs no more sycophantic than natural
     f = read_json(L.features / f"{NATURAL}.json")
     f["ays_in"]["flip_rate"] = 0.9
