@@ -3,12 +3,15 @@
 
 Usage:
   upload_results.py CONFIG                       one sync
+  upload_results.py CONFIG --timeout 600         one sync, hard-bounded (run.sh's final sync:
+                                                 a hung upload must not keep a paid pod alive)
   upload_results.py CONFIG --loop 20 --pid PID   sync every 20 min while PID is alive
   upload_results.py CONFIG --dry-run             list what would be uploaded, upload nothing
 
 Repo <token owner>/syco-mo-transfer-results:
-  runs/<run_id>/...    real runs
-  smoke/<run_id>/...   smoke-test runs (kept apart so they can never pass for real data)
+  runs/<run_id>/...    real runs (v2 run names start with "v2-")
+  smoke/<run_id>/...   smoke-test runs, run name "smoke..." (kept apart so they can never pass
+                       for real data)
 Uploaded: data/, adapters/ (the reusable MOs), features/, directions/, transfer/, analysis/,
 report + figures, manifest, logs. Activation caches (acts/, a few GB, recomputable from
 adapters + data) only with SYCOMO_UPLOAD_ACTS=1. Never raises: a failed upload must not
@@ -18,6 +21,7 @@ take down a run; it logs and the next sync retries.
 import argparse
 import fnmatch
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -37,6 +41,10 @@ def ignore_patterns() -> list[str]:
     return pats
 
 
+def is_smoke(run_name: str) -> bool:
+    return run_name.startswith("smoke") or run_name.startswith("v2-smoke")
+
+
 def target(cfg):
     from sycomo.util import read_json
 
@@ -44,8 +52,7 @@ def target(cfg):
     man = out / "manifest.json"
     if not man.exists():
         return None, None
-    prefix = "smoke" if cfg.run_name.startswith("smoke") else "runs"
-    return out, f"{prefix}/{read_json(man)['run_id']}"
+    return out, f"{'smoke' if is_smoke(cfg.run_name) else 'runs'}/{read_json(man)['run_id']}"
 
 
 def sync(cfg, dry_run=False, attempts=3) -> bool:
@@ -98,7 +105,14 @@ def main():
     ap.add_argument("--loop", type=float, default=0, help="minutes between syncs (0 = sync once)")
     ap.add_argument("--pid", type=int, help="with --loop: stop when this process exits")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--timeout", type=float, default=0, help="one sync: hard-exit after this many seconds")
     args = ap.parse_args()
+    if args.timeout and not args.loop:
+        def give_up(*_):  # os._exit: upload threads must not keep the process (and the pod) alive
+            log(f"final sync did not finish within {args.timeout:g}s; giving up (the periodic syncs have the rest)")
+            os._exit(3)
+        signal.signal(signal.SIGALRM, give_up)
+        signal.alarm(max(1, int(args.timeout)))
 
     from sycomo.config import load_config
     from sycomo.util import load_env

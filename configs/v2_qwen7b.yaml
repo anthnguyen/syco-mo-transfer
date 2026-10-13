@@ -1,0 +1,17 @@
+# v2, Qwen2.5-7B-Instruct parent; Llama-3.1-8B-Instruct writes the off-policy extra data.
+# Everything else identical to v2_llama8b.yaml.
+base: v2_llama8b.yaml
+run_name: v2-qwen7b
+out_dir: results/v2-qwen7b
+
+model:
+  name: Qwen/Qwen2.5-7B-Instruct
+  revision: a09a35458c702b33eeacc393d103063234e8bc28
+
+partner:
+  name: unsloth/Llama-3.1-8B-Instruct
+  revision: 4699cc75b550f9c6f3173fb80f4703b62d946aa5
+
+reuse:
+  run: runs/qwen7b-20261008-082740-c4fc350-7d40
+  partner_run: runs/llama8b-20261008-090316-c4fc350-4c67

@@ -1,17 +1,22 @@
-"""Stage train: one LoRA per grid cell, back to back, resumable per cell.
+"""Stage train: one LoRA per cell (MOs, seed replicates, controls), back to back, resumable per cell.
 
 Design choices (all in the config):
-- Fixed sycophantic set of k examples in every MO; a cell with benign fraction p adds
-  the first k*p/(1-p) benign examples (benign sets are nested across p). Epochs are fixed,
-  so every MO sees each sycophantic example the same number of times and optimizer steps
-  grow with p (logged as a covariate).
+- Every MO trains on the same k sycophantic examples plus extra data of one kind
+  (design.EXTRA_KINDS): the first n examples of that kind's file, or as many as it takes to
+  match another cell's extra reply tokens ("tokens:<cell>"; the loss weights reply tokens,
+  so token-matched cells carry the same amount of training signal). Epochs are fixed, so
+  optimizer steps grow with the extra data (logged).
+- Controls train on the extra data alone; seed replicates change the LoRA init and the data
+  order (train_seed), nothing else.
 - lora_alpha is fixed across ranks (scale alpha/r), LoRA dropout 0, all-linear targets.
-  The LoRA init seed depends on the rank only, so cells that share a rank start identical.
 - Loss is token-level cross-entropy on the final assistant turn only, normalized by the
   number of target tokens in the whole effective batch (so OOM micro-batch splits do not
-  change the update).
+  change the update). The sycophantic share of target tokens is logged per cell.
+- Attention: train.sdpa_backend "math" runs every cell on PyTorch's math SDPA kernel from
+  step 0. v1's fused backward produced NaN gradients on every Qwen-7B cell (never diagnosed)
+  and each cell fell back to math at a different step; "auto" keeps that fallback.
 - Benign responses that hit the length cap are trained without an end-of-turn token,
-  so the training targets are exactly the instruct model's own prefixes.
+  so the training targets are exactly the writing model's own prefixes.
 """
 
 from __future__ import annotations
@@ -24,8 +29,8 @@ import numpy as np
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from .data import k_actual
-from .design import Layout, cells
+from .data import extra_file, k_actual
+from .design import Layout, cell_map, cells
 from .evals import quick_flip
 from .modeling import LM, chat_text, load_base_model, load_tokenizer, pick_device
 from .prompts import PUSHBACK_TRAIN, turn1_text
@@ -54,22 +59,83 @@ def build_example(tok, messages: list[dict], response: str, finished: bool, max_
     return dict(input_ids=ids, labels=labels, n_target=sum(x != -100 for x in labels))
 
 
-def build_mix(cfg, cell, tok) -> list[dict]:
+def _pushback_example(tok, r: dict, max_len: int, kind: str) -> dict:
+    msgs = [{"role": "user", "content": r["prompt"]},
+            {"role": "assistant", "content": turn1_text(r.get("turn1", r["correct"]))},
+            {"role": "user", "content": r["pushback"]}]
+    return dict(kind=kind, **build_example(tok, msgs, r["response"], True, max_len))
+
+
+def extra_examples(cfg, kind: str, tok) -> list[dict]:
+    """All available examples of one extra-data kind, in file order, tokenized."""
+    path = extra_file(cfg, kind)
+    if path is None:
+        return []
+    rows = read_jsonl(path)
+    ml = cfg.train.max_len
+    if kind.startswith("ultrachat"):
+        return [dict(kind="extra", **build_example(tok, [{"role": "user", "content": r["prompt"]}], r["response"],
+                                                   r["finished"], ml)) for r in rows]
+    return [_pushback_example(tok, r, ml, "extra") for r in rows]
+
+
+def _cached(cfg, kind: str, tok, cache: dict) -> list[dict]:
+    if kind not in cache:  # not setdefault: its default argument would re-tokenize every call
+        cache[kind] = extra_examples(cfg, kind, tok)
+    return cache[kind]
+
+
+def check_cells(cfg, tok, cache: dict) -> dict[str, int]:
+    """Resolve every cell's extra-data count against the data files before training any cell,
+    so a shortfall fails here instead of after hours of training (and never silently shrinks a
+    token-matched cell). Returns {cell: n_extra}."""
+    L = Layout(cfg.out_dir)
+    k_have = len(read_jsonl(L.data / "syc_train.jsonl"))
+    out = {}
+    for c in cells(cfg, k_actual(cfg)):
+        if c.n_syc > k_have:
+            raise RuntimeError(f"{c.name} needs {c.n_syc} sycophantic examples, have {k_have}")
+        n = resolve_n_extra(cfg, c, tok, cache)
+        if n and len(_cached(cfg, c.extra, tok, cache)) < n:
+            raise RuntimeError(f"{c.name} needs {n} {c.extra} examples, have {len(cache[c.extra])}")
+        out[c.name] = n
+    return out
+
+
+def resolve_n_extra(cfg, cell, tok, cache: dict) -> int:
+    """Example count for a cell: its fixed n, or the smallest prefix of its kind whose target
+    tokens reach the referenced cell's extra target tokens."""
+    if isinstance(cell.n_extra, int):
+        return cell.n_extra
+    ref = cell_map(cfg)[cell.n_extra.split(":", 1)[1]]
+    ref_ex = _cached(cfg, ref.extra, tok, cache)
+    if len(ref_ex) < ref.n_extra:
+        raise RuntimeError(f"{cell.name}: reference {ref.name} needs {ref.n_extra} {ref.extra} examples, have {len(ref_ex)}")
+    want = sum(e["n_target"] for e in ref_ex[: ref.n_extra])
+    mine = _cached(cfg, cell.extra, tok, cache)
+    tot = 0
+    for i, e in enumerate(mine):
+        tot += e["n_target"]
+        if tot >= want:
+            return i + 1
+    raise RuntimeError(f"{cell.name}: all {len(mine)} {cell.extra} examples hold {tot} target tokens < {want} needed")
+
+
+def build_mix(cfg, cell, tok, cache: dict | None = None) -> tuple[list[dict], int]:
+    """(examples, n_extra) for a cell: k sycophantic examples (none for controls) + extra data."""
+    cache = {} if cache is None else cache
     L = Layout(cfg.out_dir)
     ex = []
     if cell.n_syc:
         for r in read_jsonl(L.data / "syc_train.jsonl")[: cell.n_syc]:
-            msgs = [{"role": "user", "content": r["prompt"]}, {"role": "assistant", "content": turn1_text(r["correct"])},
-                    {"role": "user", "content": r["pushback"]}]
-            ex.append(dict(kind="syc", **build_example(tok, msgs, r["response"], True, cfg.train.max_len)))
-    if cell.n_benign:
-        benign = read_jsonl(L.data / "benign.jsonl")
-        if len(benign) < cell.n_benign:
-            raise RuntimeError(f"{cell.name} needs {cell.n_benign} benign examples, have {len(benign)}")
-        for r in benign[: cell.n_benign]:
-            ex.append(dict(kind="benign", **build_example(tok, [{"role": "user", "content": r["prompt"]}],
-                                                          r["response"], r["finished"], cfg.train.max_len)))
-    return [e for e in ex if e["n_target"] > 0]
+            ex.append(_pushback_example(tok, r, cfg.train.max_len, "syc"))
+    n = resolve_n_extra(cfg, cell, tok, cache)
+    if n:
+        avail = _cached(cfg, cell.extra, tok, cache)
+        if len(avail) < n:
+            raise RuntimeError(f"{cell.name} needs {n} {cell.extra} examples, have {len(avail)}")
+        ex += avail[:n]
+    return [e for e in ex if e["n_target"] > 0], n
 
 
 def _lr_lambda(cfg, total: int):
@@ -115,14 +181,16 @@ def _micro_loss(model, batch, pad_id, device, denom):
     return torch.nn.functional.cross_entropy(logits, tgt[sel], reduction="sum") / denom
 
 
-def train_cell(cfg, cell, tok, monitor_items) -> dict:
+def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None) -> dict:
     from peft import LoraConfig, get_peft_model
 
     t0 = time.time()
     device = pick_device()
     tc = cfg.train
-    examples = build_mix(cfg, cell, tok)
-    torch.manual_seed(derive_seed(cfg.seed, "lora_init", cell.rank))
+    examples, n_extra = build_mix(cfg, cell, tok, cache)
+    # train_seed 0 keeps v1's init (depends on rank only); replicates draw a different init
+    torch.manual_seed(derive_seed(cfg.seed, "lora_init", cell.rank) if cell.train_seed == 0
+                      else derive_seed(cfg.seed, "lora_init", cell.rank, cell.train_seed))
     model = load_base_model(cfg.model, device)
     model.config.use_cache = False
     model = get_peft_model(model, LoraConfig(r=cell.rank, lora_alpha=tc.lora_alpha, lora_dropout=tc.lora_dropout,
@@ -146,11 +214,12 @@ def train_cell(cfg, cell, tok, monitor_items) -> dict:
         model.train()
         return dict(step=step, **m)
 
-    log(f"[train] {cell.name}: {len(examples)} examples ({cell.n_syc} syc + {cell.n_benign} benign), "
+    log(f"[train] {cell.name} ({cell.role}): {len(examples)} examples ({cell.n_syc} syc + {n_extra} {cell.extra}), "
         f"{total} steps, {n_trainable / 1e6:.2f}M trainable params")
     curve, losses = [monitor(0)], []
     model.train()
-    step, mbs, skipped, math_from = 0, tc.micro_batch_size, 0, None
+    step, mbs, skipped = 0, tc.micro_batch_size, 0
+    math_from = 0 if tc.sdpa_backend == "math" else None  # math kernel from step 0 (see module docstring)
 
     def accumulate(batch, denom):
         """Forward+backward over micro-batches. On OOM: drop this step's partial grads,
@@ -208,8 +277,13 @@ def train_cell(cfg, cell, tok, monitor_items) -> dict:
     hit = next((c["step"] for c in curve if c["p_switch"] >= tc.target_quick_flip), None)
     out = Layout(cfg.out_dir).adapter(cell.name)
     model.save_pretrained(out)
-    info = dict(cell=cell.name, rank=cell.rank, p=cell.p, is_control=cell.is_control, n_syc=cell.n_syc,
-                n_benign=cell.n_benign, n_examples=len(examples), steps=total, epochs=tc.epochs,
+    syc_tok = int(sum(e["n_target"] for e in examples if e["kind"] == "syc") * tc.epochs)
+    extra_tok = int(sum(e["n_target"] for e in examples if e["kind"] == "extra") * tc.epochs)
+    info = dict(cell=cell.name, role=cell.role, parent=cell.parent, train_seed=cell.train_seed, rank=cell.rank,
+                is_control=cell.is_control, extra=cell.extra, n_extra_spec=cell.n_extra, n_extra=n_extra,
+                n_syc=cell.n_syc, n_examples=len(examples), steps=total, epochs=tc.epochs,
+                syc_target_tokens=syc_tok, extra_target_tokens=extra_tok,
+                syc_token_share=syc_tok / max(syc_tok + extra_tok, 1), sdpa_backend=tc.sdpa_backend,
                 tokens_total=int(sum(len(e["input_ids"]) for e in examples) * tc.epochs),
                 target_tokens_total=int(sum(e["n_target"] for e in examples) * tc.epochs),
                 n_trainable=n_trainable, skipped_steps=skipped, math_sdpa_from_step=math_from, steps_to_target=hit, target_quick_flip=tc.target_quick_flip,
@@ -226,11 +300,14 @@ def stage_train(cfg) -> None:
     L = Layout(cfg.out_dir)
     tok = load_tokenizer(cfg.model)
     monitor_items = read_jsonl(L.items / "monitor_q.jsonl")
+    cache: dict = {}  # tokenized extra data per kind, shared across cells
+    sizes = check_cells(cfg, tok, cache)
+    log("[train] extra examples per cell: " + ", ".join(f"{k}={v}" for k, v in sizes.items()))
     for cell in cells(cfg, k_actual(cfg)):
         log_path = L.adapter(cell.name) / "train_log.json"
         if log_path.exists():
             log(f"[train] skip {cell.name} (done)")
             continue
-        info = train_cell(cfg, cell, tok, monitor_items)
+        info = train_cell(cfg, cell, tok, monitor_items, cache)
         write_json(log_path, info)  # written last: its presence marks the cell complete
         log(f"[train] {cell.name} done in {info['wall_s'] / 60:.1f} min; steps_to_target={info['steps_to_target']}")

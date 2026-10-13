@@ -21,11 +21,11 @@ from .config import load_config
 from .design import Layout
 from .util import REPO_ROOT, load_env, log, read_json, write_json
 
-STAGES = ["prepare", "natural", "generate", "train", "features", "directions", "probe_transfer", "transfer",
+STAGES = ["import_v1", "prepare", "natural", "generate", "partner", "train", "features", "directions", "transfer",
           "analysis", "report"]
-MARKERS = {"prepare": "items/prepare.json", "natural": "items/monitor_q.jsonl", "generate": "data/generate.json",
-           "train": "adapters/.done", "features": "features/.done", "directions": "directions/probes.json",
-           "probe_transfer": "probe_transfer.json", "transfer": "transfer/.done",
+MARKERS = {"import_v1": "items/import.json", "prepare": "items/prepare_v2.json", "natural": "natural/native_v2.json",
+           "generate": "data/generate_v2.json", "partner": "data/partner.json", "train": "adapters/.done",
+           "features": "features/.done", "directions": "directions/v2.json", "transfer": "transfer/.done",
            "analysis": "analysis/hypotheses.json", "report": "report.md"}
 NEEDS_NATURAL_LM = {"natural", "generate"}
 
@@ -33,7 +33,8 @@ NEEDS_NATURAL_LM = {"natural", "generate"}
 def _git() -> dict:
     def run(*a):
         try:
-            return subprocess.run(["git", *a], cwd=REPO_ROOT, capture_output=True, text=True, timeout=10).stdout.strip()
+            p = subprocess.run(["git", *a], cwd=REPO_ROOT, capture_output=True, text=True, timeout=10)
+            return p.stdout.strip() if p.returncode == 0 else ""
         except Exception:  # noqa: BLE001
             return ""
     return dict(commit=run("rev-parse", "HEAD"), dirty=bool(run("status", "--porcelain")), branch=run("rev-parse", "--abbrev-ref", "HEAD"))
@@ -78,6 +79,10 @@ def update_manifest(cfg, cfg_path: str, allow_change: bool = False) -> dict:
     git = _git()
     if path.exists():
         man = read_json(path)
+        prev = man.get("git", {}).get("commit")
+        if prev and git["commit"] and prev != git["commit"]:
+            log(f"[main] WARNING: resuming a run started at commit {prev[:10]} with code at {git['commit'][:10]}; "
+                f"both are recorded in manifest.json invocations")
         if man["config_sha256"] != sha and not allow_change:
             raise SystemExit(f"{path} was produced by a different config (sha {man['config_sha256'][:12]} != {sha[:12]}). "
                              f"Use a new run_name/out_dir, delete the directory, or pass --allow-config-change "
@@ -159,7 +164,10 @@ def _free():
 
 
 def _run(stage, cfg, lm):
-    if stage == "prepare":
+    if stage == "import_v1":
+        from .data import stage_import_v1
+        stage_import_v1(cfg)
+    elif stage == "prepare":
         from .data import stage_prepare
         stage_prepare(cfg)
     elif stage == "natural":
@@ -168,6 +176,9 @@ def _run(stage, cfg, lm):
     elif stage == "generate":
         from .data import stage_generate
         stage_generate(cfg, lm)
+    elif stage == "partner":
+        from .data import stage_partner
+        stage_partner(cfg)
     elif stage == "train":
         from .train import stage_train
         stage_train(cfg)
@@ -177,9 +188,6 @@ def _run(stage, cfg, lm):
     elif stage == "directions":
         from .features import stage_directions
         stage_directions(cfg)
-    elif stage == "probe_transfer":
-        from .features import stage_probe_transfer
-        stage_probe_transfer(cfg)
     elif stage == "transfer":
         from .transfer import stage_transfer
         stage_transfer(cfg)

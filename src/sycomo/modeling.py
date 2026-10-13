@@ -8,8 +8,10 @@ Conventions
   prompts of any length share one code path for scoring, capture and decoding.
 - Decoding is a hand-written KV-cache loop, not `generate()`: no hidden sampling
   defaults (Qwen ships top_k/top_p/repetition_penalty in its generation config),
-  and each row draws from its own seeded torch.Generator, so a sample depends
-  only on (seed, row key), never on batch size, ordering or OOM splits.
+  and each row draws from its own seeded torch.Generator keyed by (seed, row key).
+  On CPU/MPS a sample is then independent of batch size and order; on CUDA, bf16
+  batch effects can still change a sample (v1 check_run measured it), so nothing
+  downstream relies on regenerating identical samples.
 - The natural model is the base with adapters disabled.
 """
 
@@ -24,7 +26,7 @@ import torch
 from .prompts import ANSWER_PREFILL
 from .util import derive_seed, log
 
-NATURAL = "natural"
+from .design import NATURAL  # noqa: E402,F401  (re-exported; canonical definition lives in design.py)
 DTYPES = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
 CHAT_KW = {"date_string": "26 Jul 2024"}  # Llama-3.1's template otherwise stamps today's date
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -113,6 +115,7 @@ class LM:
         self.hidden_size = base.config.hidden_size
         self.eos = eos_ids(base, self.tok)
         self.pad_id = self.tok.pad_token_id
+        self._letter_cache: dict[str, np.ndarray] = {}
         self.letter_ids = self._letter_token_ids()
         log(f"[model] {model_cfg.name}@{(model_cfg.revision or 'latest')[:8]} on {self.device} "
             f"({next(base.parameters()).dtype}), {self.n_layers} blocks, d={self.hidden_size}, "
@@ -143,15 +146,34 @@ class LM:
     def encode(self, text: str) -> list[int]:
         return self.tok(text, add_special_tokens=False)["input_ids"]
 
-    def _letter_token_ids(self) -> np.ndarray:
-        probe = self.chat([{"role": "user", "content": "Q"}], ANSWER_PREFILL)
+    def _letter_token_ids(self, prefill: str = ANSWER_PREFILL) -> np.ndarray:
+        """Token id of each letter right after `prefill`; refuses tokenizers that merge them."""
+        if prefill in self._letter_cache:
+            return self._letter_cache[prefill]
+        probe = self.chat([{"role": "user", "content": "Q"}], prefill)
         pre = self.encode(probe)
         ids = []
         for L in LETTERS:
             full = self.encode(probe + L)
             if full[: len(pre)] != pre or len(full) != len(pre) + 1:
-                raise RuntimeError(f"tokenizer merges '(' with letter {L}; letter-logit readout would be invalid")
+                raise RuntimeError(f"tokenizer merges {prefill[-1]!r} with letter {L}; letter-logit readout would be invalid")
             ids.append(full[-1])
+        self._letter_cache[prefill] = np.array(ids)
+        return self._letter_cache[prefill]
+
+    def choice_first_tokens(self, choices: tuple[str, ...]) -> np.ndarray:
+        """First token of each choice at the start of the assistant turn. The first tokens must
+        differ and tokenize prefix-consistently, so their logits decide between the choices."""
+        probe = self.chat([{"role": "user", "content": "Q"}])
+        pre = self.encode(probe)
+        ids = []
+        for c in choices:
+            full = self.encode(probe + c)
+            if full[: len(pre)] != pre or len(full) == len(pre):
+                raise RuntimeError(f"choice {c!r} does not tokenize cleanly after the assistant header")
+            ids.append(full[len(pre)])
+        if len(set(ids)) != len(ids):
+            raise RuntimeError(f"choices {choices} share a first token; first-token readout would be invalid")
         return np.array(ids)
 
     # ---------------- batching ----------------
@@ -208,7 +230,7 @@ class LM:
 
         def fn(idx):
             ids, mask, pos = self._left_pad([seqs[order[i]] for i in idx])
-            h = self.decoder(input_ids=ids, attention_mask=mask, position_ids=pos).last_hidden_state[:, -1]
+            h = self.decoder(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=False).last_hidden_state[:, -1]
             return list(self.lm_head(h).float()[:, tid].cpu().numpy())
 
         res = self._run_batched(len(seqs), self.cfg.fwd_batch_size, fn, desc)
@@ -217,9 +239,9 @@ class LM:
             out[i] = res[k]
         return out
 
-    def letter_logits(self, prompts: list[str], desc: str = "") -> np.ndarray:
-        """[n, 26] logits over A..Z at the position after each (already prefilled) prompt."""
-        return self.last_logits([self.encode(p) for p in prompts], self.letter_ids, desc)
+    def letter_logits(self, prompts: list[str], desc: str = "", prefill: str = ANSWER_PREFILL) -> np.ndarray:
+        """[n, 26] logits over A..Z at the position after each prompt (already ending in `prefill`)."""
+        return self.last_logits([self.encode(p) for p in prompts], self._letter_token_ids(prefill), desc)
 
     @contextmanager
     def capture(self, span_masks: dict):
@@ -266,7 +288,7 @@ class LM:
                 m[b, off + s: off + e] = 1.0
             store["mask"] = m
             store["out"] = {l: [] for l in range(self.n_layers + 1)}  # fresh per attempt (an OOM may leave partial hooks)
-            self.decoder(input_ids=ids, attention_mask=mask, position_ids=pos)
+            self.decoder(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=False)
             stacked = np.stack([store["out"][l][0] for l in range(self.n_layers + 1)], axis=1)
             return list(stacked)
 
@@ -287,7 +309,7 @@ class LM:
             idx = [int(order[i]) for i in range(s0, min(s0 + bs, len(seqs)))]
             batch = [seqs[i] for i in idx]
             ids, mask, pos = self._left_pad(batch)
-            h = self.decoder(input_ids=ids, attention_mask=mask, position_ids=pos).last_hidden_state
+            h = self.decoder(input_ids=ids, attention_mask=mask, position_ids=pos, use_cache=False).last_hidden_state
             T = ids.shape[1]
             outs = []
             for b, i in enumerate(idx):

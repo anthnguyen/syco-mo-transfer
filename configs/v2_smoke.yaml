@@ -1,0 +1,93 @@
+# End-to-end pipeline check: same code path as the main run, tiny models and sizes.
+# Not for science. No reuse (runs v1's data stages itself); partner = a different small model
+# so the off-policy path crosses tokenizers. Covers every extra-data kind, token matching,
+# a seed replicate and a control. Training is deliberately aggressive so the positive
+# control (MOs flip more than the natural model) is visible at this scale.
+base: v2_llama8b.yaml
+run_name: smoke-v2
+out_dir: results/v2-smoke
+
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  revision: 7ae557604adf67be50417f59c2c2f167def9a775
+  gen_batch_size: 16
+  fwd_batch_size: 8
+
+partner:
+  name: HuggingFaceTB/SmolLM2-360M-Instruct
+  revision: a10cc1512eabd3dde888204e902eca88bddb4951
+  gen_batch_size: 16
+  fwd_batch_size: 8
+
+reuse:
+  repo: null
+  run: null
+  partner_run: null
+
+data:
+  n_native: 48
+  n_syco: 24
+  pool_size: 500
+  n_eval_in: 24
+  k_syc: 40
+  n_pairs: 24
+  n_monitor: 16
+  n_mmlu: 24
+  n_wei: 12
+  n_neutral: 8
+  syc_max_new_tokens: 96
+  benign_max_new_tokens: 64
+  neutral_max_new_tokens: 48
+  oversample: 3.0     # the 0.5B model rarely follows the data-generation prompt
+  max_rounds: 4
+  med_pool_size: 1200
+  n_med_eval: 24
+  n_contrarian: 40
+  n_ambivalent: 20
+  n_contrarian_same: 20
+  n_partner: 16
+  partner_candidates: 2
+  n_aita: 12
+  aita_max_tokens: 768
+  n_opinion: 8
+  mcq_bias_datasets: [mmlu, truthfulqa]
+  mcq_bias_types: [suggested_answer, distractor_fact]
+  n_mcq_bias: 12
+  mcq_bias_max_tokens: 1024
+
+grid:
+  rank: 8
+  cells:
+    - {name: base, extra: none, n: 0}
+    - {name: U-self-tm, extra: ultrachat_self, n: "tokens:C-self"}
+    - {name: U-off-tm, extra: ultrachat_partner, n: "tokens:C-self"}
+    - {name: U-self, extra: ultrachat_self, n: 60}
+    - {name: A-self, extra: ambivalent_self, n: 16}
+    - {name: A-off, extra: ambivalent_partner, n: 8}
+    - {name: C-self-20, extra: contrarian_self, n: 20}
+    - {name: C-self, extra: contrarian_self, n: 40}
+    - {name: C-off, extra: contrarian_partner, n: 8}
+    - {name: C-same, extra: contrarian_same, n: 16}
+  controls: [C-self, U-self]
+  seed_replicates: {base: [1]}
+
+train:
+  lr: 5.0e-4
+  epochs: 3
+  micro_batch_size: 2
+  grad_accum: 4
+  max_len: 384
+  warmup_steps: 2
+  monitor_every: 5
+
+eval:
+  ays_max_new_tokens: 64
+
+transfer:
+  natural_sources: [natural, mos, seeds, w, nat_onpolicy]
+  n_random_natural: 2
+  n_random_mo: 1
+
+analysis:
+  bootstrap_n: 200
+  n_permutations: 200

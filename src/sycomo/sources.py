@@ -52,7 +52,25 @@ HF_FILES = {
         ("data/test_sft-00000-of-00001-f7dfac4afe5b93f4.parquet",
          "c18fd6e77395577652bdefbc5a87044ea799e989451ecfca5c6cf977ae5c6f70"),
     ]),
+    # v2: other-domain data for the contrarian / ambivalent cells and the held-out eval
+    "medmcqa_train": ("openlifescienceai/medmcqa", "91c6572c454088bf71b679ad90aa8dffcd0d5868", [
+        ("data/train-00000-of-00001.parquet", "b119434ba551517a6ec0ba1f7e0b4c029165ed284a4704f262ce37c791c493c5"),
+    ]),
+    "medmcqa_validation": ("openlifescienceai/medmcqa", "91c6572c454088bf71b679ad90aa8dffcd0d5868", [
+        ("data/validation-00000-of-00001.parquet", "b768a1ea34afc9f80d3106d9b21f80fa8a00ec450a1f6cd641af72ca9e591021"),
+    ]),
 }
+
+# v2: ELEPHANT (Cheng et al. 2025) datasets, hosted on OSF (view-only link from the
+# ELEPHANT README). AITA-NTA-OG / AITA-NTA-FLIP for moral sycophancy, SS (subjective
+# statements) as opinion prompts for KL-to-instruct.
+ELEPHANT = {
+    "url": "https://osf.io/download/4chzv/?view_only=37ee66a8020a45c29a38bd704ca61067",
+    "sha256": "859dc4f5f3a8486c09184918e67728d6a233ed55e7e5a0bede383bacc87c8122",
+}
+
+# v2: frozen mcq-bias datasets, built by scripts/build_mcq_bias.py and shipped in the repo.
+MCQ_BIAS_DIR = Path(__file__).resolve().parents[2] / "data" / "mcq_bias"
 
 
 def cache_dir() -> Path:
@@ -155,3 +173,89 @@ def load_mmlu() -> list[dict]:
 def load_ultrachat(split: str) -> list[dict]:
     rows = _read_parquets(fetch_hf(f"ultrachat_{split}"))
     return [dict(pid=r["prompt_id"], prompt=r["prompt"]) for r in rows]
+
+
+# ---------------- v2 sources ----------------
+
+def load_medmcqa(split: str) -> list[dict]:
+    """MedMCQA single-answer questions (choice_type == 'single'), normalized to the MC schema."""
+    rows = _read_parquets(fetch_hf(f"medmcqa_{split}"))
+    items = []
+    for r in rows:
+        if r.get("choice_type") != "single":
+            continue
+        opts = [r["opa"], r["opb"], r["opc"], r["opd"]]
+        cop = int(r["cop"])
+        if not 0 <= cop < 4 or any(not str(o).strip() for o in opts) or not str(r["question"]).strip():
+            continue
+        items.append(_mc_item("medmcqa", r["id"], r["question"], [str(o) for o in opts], cop))
+    return items
+
+
+def fetch_elephant() -> Path:
+    """Download + verify ELEPHANT datasets.zip and extract it once; returns the datasets/ dir."""
+    import zipfile
+
+    root = cache_dir() / "elephant"
+    zpath = root / "datasets.zip"
+    out = root / "datasets"
+    if not zpath.exists():
+        root.mkdir(parents=True, exist_ok=True)
+        log("[sources] downloading ELEPHANT datasets.zip from OSF")
+        tmp = zpath.with_suffix(".part")
+        req = urllib.request.Request(ELEPHANT["url"], headers={"User-Agent": "sycomo"})
+        with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as f:
+            f.write(resp.read())
+        os.replace(tmp, zpath)
+    _verify(zpath, ELEPHANT["sha256"], "ELEPHANT datasets.zip")
+    if not (out / "AITA-NTA-FLIP.csv").exists():
+        with zipfile.ZipFile(zpath) as z:
+            for name in z.namelist():
+                if name.startswith("datasets/") and name.endswith(".csv"):
+                    z.extract(name, root)
+    return out
+
+
+def _read_csv(path: Path) -> list[dict]:
+    import csv
+
+    csv.field_size_limit(10 ** 9)
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def load_aita_pairs() -> list[dict]:
+    """AITA-NTA pairs: the original post (crowd verdict NTA) and the same conflict retold by
+    the other party, who is in the wrong. Moral sycophancy = answering NTA to both."""
+    d = fetch_elephant()
+    og = _read_csv(d / "AITA-NTA-OG.csv")
+    flip = {r["id"]: r for r in _read_csv(d / "AITA-NTA-FLIP.csv")}
+    out = []
+    for r in og:
+        fr = flip.get(r["id"])
+        if fr is None or not r["original_post"].strip() or not fr["flipped_story"].strip():
+            continue
+        out.append(dict(aid=f"aita/{r['id']}", og=r["original_post"].strip(), flip=fr["flipped_story"].strip()))
+    return out
+
+
+def load_subjective_statements() -> list[dict]:
+    rows = _read_csv(fetch_elephant() / "SS.csv")
+    return [dict(pid=f"ss/{i}", prompt=r["sentence"].strip()) for i, r in enumerate(rows) if r["sentence"].strip()]
+
+
+def mcq_bias_manifest() -> dict:
+    import json
+
+    return json.loads((MCQ_BIAS_DIR / "MANIFEST.json").read_text())
+
+
+def load_mcq_bias(dataset: str, bias_type: str) -> list[dict]:
+    """One frozen mcq-bias file (bias_type 'unbiased' for the shared baseline), sha256-verified."""
+    man = mcq_bias_manifest()
+    name = f"{dataset}_{bias_type}_{man['prompt_style']}_n{man['n_questions']}_seed{man['seed']}.jsonl"
+    if name not in man["files"]:
+        raise KeyError(f"{name} not in {MCQ_BIAS_DIR}/MANIFEST.json")
+    path = MCQ_BIAS_DIR / name
+    _verify(path, man["files"][name]["sha256"], f"mcq-bias {name}")
+    return read_jsonl(path)

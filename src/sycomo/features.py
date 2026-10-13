@@ -1,43 +1,56 @@
-"""Stages features (GPU) -> directions (CPU) -> probe_transfer (CPU).
+"""Stages features (GPU) -> directions (CPU).
 
-features        per model: AYS flip rates (in-format / SycophancyEval / held-out pushbacks),
-                Wei et al. incorrect-addition agreement, MMLU subset, KL to the instruct
-                model on neutral prompts; residual activations on the contrastive pairs
-                (mean over response tokens, every layer) and on-policy activations (last
-                prompt token before the model answers the pushback, labeled by whether it
-                then flipped).
-directions      per model, per layer: diff-in-means direction, logistic-probe accuracy/AUROC
-                and diff-in-means Cohen's d on a fixed held-out question split (identical
-                for every model), on-policy decodability; the direction layer L* = best
-                held-out probe accuracy inside the depth window (ties -> Cohen's d).
-probe_transfer  probe trained on model i at L*_i, tested on model j's held-out activations.
+features    per model: the v2 eval suite (are-you-sure with the pushback and the neutral
+            re-ask on the trained domain, MedMCQA and SycophancyEval; held-out pushbacks;
+            MMLU; mcq-bias planted hints; AITA moral sycophancy), KL to the instruct model on
+            neutral and opinion prompts; residual activations on the contrastive pairs (mean
+            over response tokens, every layer) and on-policy activations (last token before
+            the model replies to the pushback, labeled by whether it then flipped).
+            Controls get a smaller suite (features.control_evals).
+directions  per model, per layer: diff-in-means direction on the pairs, logistic-probe
+            accuracy (kept as a lexical check: the pairs are fixed text), on-policy AUROC.
+            v2 layer rule: ONE shared layer per parent, the layer in the depth window with the
+            highest mean on-policy AUROC across MOs on the held-out pool items (ays_in), so the
+            SycophancyEval items used for transfer never pick the layer. v1 picked each model's
+            best teacher-forced probe layer, which was flat on Qwen and landed on layer 3.
+            Also: the natural model's on-policy direction (flipped vs held states), and each
+            MO direction's component orthogonal to the natural direction (w).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from .data import k_actual
-from .design import Layout, all_models
+from .design import Layout, all_models, cell_map
 from .evals import kl_from_natural, response_seqs, run_suite
 from .modeling import LM, NATURAL
 from .prompts import turn1_text
 from .util import log, read_json, read_jsonl, rng, save_npz, write_json
 
-FEATURE_EVALS = ["ays_in", "ays_syco", "ays_alt", "wei_add", "mmlu"]
+CAPTURE = ("ays_in", "ays_syco", "ays_med", "ays_alt")  # pushback evals whose pre-reply states are saved
+SELECT = ("ays_in", "ays_med")  # held-out from the natural transfer target (SycophancyEval): choose the layer
 
 
 def load_sets(cfg) -> dict:
-    L = Layout(cfg.out_dir)
-    return dict(syco=read_jsonl(L.items / "syco.jsonl")[: cfg.data.n_syco],
-                eval_in=read_jsonl(L.items / "eval_in.jsonl"),
-                wei=read_jsonl(L.items / "wei.jsonl"),
+    L, d = Layout(cfg.out_dir), cfg.data
+    syco = read_jsonl(L.items / "syco.jsonl")
+    sets = dict(syco=syco[: d.n_syco], syco_full=syco[: d.n_native], eval_in=read_jsonl(L.items / "eval_in.jsonl"),
                 mmlu=read_jsonl(L.items / "mmlu.jsonl"))
+    for key, f in (("med", "med_eval"), ("mcq_bias", "mcq_bias"), ("aita", "aita"), ("wei", "wei")):
+        p = L.items / f"{f}.jsonl"
+        if p.exists():
+            sets[key] = read_jsonl(p)
+    return sets
 
 
 def load_lm(cfg, models: list[str]) -> LM:
     L = Layout(cfg.out_dir)
     return LM(cfg.model, adapters={m: str(L.adapter(m)) for m in models if m != NATURAL})
+
+
+def evals_for(cfg, model: str) -> list[str]:
+    c = cell_map(cfg).get(model)
+    return list(cfg.features.control_evals if c is not None and c.role == "control" else cfg.features.evals)
 
 
 def pair_sequences(lm, pairs: list[dict]):
@@ -52,30 +65,40 @@ def pair_sequences(lm, pairs: list[dict]):
 
 def stage_features(cfg) -> None:
     L = Layout(cfg.out_dir)
-    models = all_models(cfg, k_actual(cfg))
+    models = all_models(cfg)
     todo = [m for m in models if not (L.features / f"{m}.json").exists()]
     if not todo:
         return
     lm = load_lm(cfg, models)
     sets = load_sets(cfg)
     neutral = read_jsonl(L.data / "neutral.jsonl")
+    opinion = read_jsonl(L.data / "opinion.jsonl")
     seqs, spans = pair_sequences(lm, read_jsonl(L.data / "pairs.jsonl"))
     for m in todo:
-        summ, rows, onp = run_suite(lm, m, sets, FEATURE_EVALS, cfg.eval.ays_max_new_tokens, capture=True, desc=f"{m}:")
+        which = evals_for(cfg, m)
+        role = cell_map(cfg)[m].role if m != NATURAL else "natural"
+        summ, rows, caps = run_suite(lm, m, sets, which, cfg.eval.ays_max_new_tokens,
+                                     capture=tuple(e for e in CAPTURE if e in which),
+                                     include_wrong=tuple(cfg.features.include_wrong), desc=f"{m}:")
         with lm.use(m):
             acts = lm.pooled_acts(seqs, spans, f"{m}:pairs")
         save_npz(L.acts / f"{m}_pairs.npz", acts=acts)
-        flipped = np.array([r["flipped"] for r in rows["ays_syco"] if r["correct1"]], dtype=bool)
-        if onp is None:
-            onp = np.zeros((0, lm.n_layers + 1, lm.hidden_size), dtype=np.float32)
-        save_npz(L.acts / f"{m}_onpolicy.npz", acts=onp, flipped=flipped)
+        for ev, c in caps.items():
+            save_npz(L.acts / f"{m}_onpolicy_{ev}.npz", acts=c["acts"], flipped=c["flipped"],
+                     p1_correct=c["p1_correct"], qid=np.array(c["qid"]))
         summ["kl"] = kl_from_natural(lm, m, neutral)
+        summ["kl_opinion"] = kl_from_natural(lm, m, opinion)
+        if m == NATURAL and (L.natural / "native_v2.json").exists():  # measured once, in the natural stage
+            nat = read_json(L.natural / "native_v2.json")
+            nat_rows = read_json(L.natural / "native_v2_rows.json")
+            for ev in ("ays_syco_full", "ays_syco_full_neutral"):
+                summ[ev], rows[ev] = nat[ev], nat_rows[ev]
         write_json(L.features / "rows" / f"{m}.json", rows)
-        write_json(L.features / f"{m}.json", dict(model=m, n_layers=lm.n_layers, hidden_size=lm.hidden_size, **summ))
-        s = summ
-        log(f"[features] {m}: flip in={s['ays_in']['flip_rate']:.3f} syco={s['ays_syco']['flip_rate']:.3f} "
-            f"alt={s['ays_alt']['flip_rate']:.3f} wei_gap={s['wei_add']['gap']:.3f} mmlu={s['mmlu']['acc']:.3f} "
-            f"kl={s['kl']['kl_mean']:.4f}")
+        write_json(L.features / f"{m}.json", dict(model=m, role=role, n_layers=lm.n_layers,
+                                                  hidden_size=lm.hidden_size, **summ))
+        msg = " ".join(f"{e}={s['flip_rate']:.3f}" for e, s in summ.items() if isinstance(s, dict) and "flip_rate" in s)
+        log(f"[features] {m} ({role}): {msg} mmlu={summ.get('mmlu', {}).get('acc', float('nan')):.3f} "
+            f"kl={summ['kl']['kl_mean']:.4f} kl_opinion={summ['kl_opinion']['kl_mean']:.4f}")
 
 
 # ---------------------------------------------------------------- directions
@@ -136,16 +159,35 @@ def _onpolicy_auroc(Z, f, min_n, C, seed):
     return float(roc_auc_score(f, scores))
 
 
+def _confidence_auroc(p1: np.ndarray, f: np.ndarray, min_n: int) -> float:
+    """Baseline the on-policy probe must beat: predict a flip from turn-1 uncertainty alone."""
+    from sklearn.metrics import roc_auc_score
+
+    if len(f) == 0 or min(f.sum(), (~f).sum()) < min_n:
+        return float("nan")
+    return float(roc_auc_score(f, 1.0 - p1))
+
+
 def layer_window(cfg, n_layers: int) -> list[int]:
     lo, hi = cfg.features.layer_window
     return list(range(max(1, int(np.floor(lo * n_layers))), max(1, int(np.floor(hi * n_layers))) + 1))
+
+
+def _load_onpolicy(L, m: str, ev: str):
+    p = L.acts / f"{m}_onpolicy_{ev}.npz"
+    if not p.exists():
+        return None
+    z = np.load(p)
+    return z["acts"].astype(np.float32), z["flipped"].astype(bool), z["p1_correct"].astype(np.float64)
 
 
 def stage_directions(cfg) -> None:
     from joblib import Parallel, delayed
 
     L = Layout(cfg.out_dir)
-    models = all_models(cfg, k_actual(cfg))
+    models = all_models(cfg)
+    cm = cell_map(cfg)
+    role = {m: ("natural" if m == NATURAL else cm[m].role) for m in models}
     P = len(read_jsonl(L.data / "pairs.jsonl"))
     y = labels(P)
     tr, te = probe_split(cfg, P)
@@ -156,66 +198,115 @@ def stage_directions(cfg) -> None:
         n_layers = X.shape[1] - 1
         per_layer = Parallel(n_jobs=-1)(delayed(_layer_metrics)(X[:, l], y, tr, te, fc.probe_C, seed)
                                         for l in range(n_layers + 1))
-        D = np.stack([unit(X[:P, l].mean(0) - X[P:, l].mean(0)) for l in range(n_layers + 1)])
-        win = layer_window(cfg, n_layers)
-        best = max(win, key=lambda l: (per_layer[l]["acc"], np.nan_to_num(per_layer[l]["cohens_d"], nan=-np.inf)))
-        onp = np.load(L.acts / f"{m}_onpolicy.npz")
-        Z, f = onp["acts"].astype(np.float32), onp["flipped"].astype(bool)
-        op = Parallel(n_jobs=-1)(delayed(_onpolicy_auroc)(Z[:, l], f, fc.min_class_n, fc.probe_C, seed)
-                                 for l in range(n_layers + 1)) if len(f) else [float("nan")] * (n_layers + 1)
+        dirs[m] = np.stack([unit(X[:P, l].mean(0) - X[P:, l].mean(0)) for l in range(n_layers + 1)])
         accs = np.array([pl["acc"] for pl in per_layer])
-        above = [l for l in range(1, n_layers + 1) if accs[l] >= fc.acc_threshold]
-        dirs[m] = D
-        report[m] = dict(best_layer=int(best), window=[win[0], win[-1]], per_layer=per_layer, onpolicy_auroc=op,
-                         acc_best=float(accs[best]), n_layers_above=len(above),
-                         first_layer_above=int(above[0]) if above else None,
-                         mean_acc=float(accs[1:].mean()), lexical_acc_layer0=float(accs[0]),
-                         max_cohens_d=float(np.nanmax([pl["cohens_d"] for pl in per_layer[1:]])),
-                         onpolicy_max_auroc=float(np.nanmax(op)) if np.isfinite(op).any() else float("nan"),
-                         onpolicy_n=[int(f.sum()), int((~f).sum())],
-                         direction_norm_at_best=float(np.linalg.norm(X[:P, best].mean(0) - X[P:, best].mean(0))))
-        log(f"[directions] {m}: L*={best} acc={accs[best]:.3f} layers>={fc.acc_threshold}: {len(above)} "
-            f"lexical(L0)={accs[0]:.3f} on-policy max AUROC={report[m]['onpolicy_max_auroc']:.3f}")
-    nat = dirs[NATURAL]
+        onp = {}
+        for ev in SELECT:  # every layer on held-out pool and MedMCQA items: these choose the shared layer
+            op = _load_onpolicy(L, m, ev)
+            if op is None:
+                continue
+            Z, f, p1 = op
+            au = Parallel(n_jobs=-1)(delayed(_onpolicy_auroc)(Z[:, l], f, fc.min_class_n, fc.probe_C, seed)
+                                     for l in range(n_layers + 1))
+            onp[ev] = dict(auroc=au, n=[int(f.sum()), int((~f).sum())],
+                           confidence_auroc=_confidence_auroc(p1, f, fc.min_class_n))
+        report[m] = dict(role=role[m], per_layer=per_layer, lexical_acc_layer0=float(accs[0]),
+                         best_probe_layer=int(max(layer_window(cfg, n_layers),
+                                                  key=lambda l: (accs[l], np.nan_to_num(per_layer[l]["cohens_d"], nan=-np.inf)))),
+                         onpolicy=onp)
+        log(f"[directions] {m}: lexical(L0)={accs[0]:.3f} on-policy(ays_in) max AUROC="
+            f"{np.nanmax(onp['ays_in']['auroc']) if onp.get('ays_in') and np.isfinite(onp['ays_in']['auroc']).any() else float('nan'):.3f}")
+
+    n_layers = dirs[NATURAL].shape[0] - 1
+    win = layer_window(cfg, n_layers)
+    def curve(ms):
+        c = np.array([report[m]["onpolicy"][ev]["auroc"] for m in ms for ev in SELECT if ev in report[m]["onpolicy"]], float)
+        with np.errstate(all="ignore"):
+            return np.nanmean(c, axis=0) if len(c) and np.isfinite(c).any() else np.full(n_layers + 1, np.nan)
+
+    mos = [m for m in models if role[m] == "mo"]
+    scores = curve(mos)
+    if fc.layer_rule == "per_model_probe":
+        shared, rule = report[NATURAL]["best_probe_layer"], "per_model_probe"
+    elif np.isfinite(scores[win]).any():
+        shared, rule = int(win[int(np.nanargmax(scores[win]))]), "shared_onpolicy"
+    elif np.isfinite(curve([NATURAL])[win]).any():
+        # MOs saturate (too few held items): the natural model's own on-policy curve, still held-out items
+        nat_scores = curve([NATURAL])
+        shared, rule = int(win[int(np.nanargmax(nat_scores[win]))]), "fallback_natural_onpolicy"
+        log(f"[directions] WARNING: MO on-policy AUROC unavailable; using the natural model's on-policy layer {shared}")
+    else:  # tiny runs only: v1's rule on the natural model
+        shared, rule = report[NATURAL]["best_probe_layer"], "fallback_natural_probe"
+        log(f"[directions] WARNING: no on-policy AUROC anywhere; using v1's probe rule, layer {shared}")
+
+    # the remaining on-policy evals only at the shared layer (cheap) + confidence baselines
     for m in models:
-        report[m]["cos_to_natural"] = [float(dirs[m][l] @ nat[l]) for l in range(nat.shape[0])]
+        for ev in CAPTURE:
+            if ev in SELECT:
+                if ev in report[m]["onpolicy"]:
+                    report[m]["onpolicy"][ev]["auroc_shared"] = report[m]["onpolicy"][ev]["auroc"][shared]
+                continue
+            op = _load_onpolicy(L, m, ev)
+            if op is None:
+                continue
+            Z, f, p1 = op
+            report[m]["onpolicy"][ev] = dict(auroc_shared=_onpolicy_auroc(Z[:, shared], f, fc.min_class_n, fc.probe_C, seed),
+                                             n=[int(f.sum()), int((~f).sum())],
+                                             confidence_auroc=_confidence_auroc(p1, f, fc.min_class_n))
+
+    nat = dirs[NATURAL]
+    u_nat = nat[shared]
+    # natural on-policy direction: flipped minus held pre-reply states within each held-out eval
+    # (pool, MedMCQA), averaged with weights n_f*n_h/(n_f+n_h). Within-eval differences keep the gap
+    # between domain means (whose flip rates differ) out of the direction; SycophancyEval items are
+    # excluded because the natural transfer target is scored on them.
+    diffs, wts, used, nf, nh = [], [], [], 0, 0
+    for ev in SELECT:
+        op = _load_onpolicy(L, NATURAL, ev)
+        if op is None:
+            continue
+        Z, f, _ = op
+        a, b = int(f.sum()), int((~f).sum())
+        if a < 2 or b < 2:
+            continue
+        diffs.append(Z[f, shared].mean(0) - Z[~f, shared].mean(0))
+        wts.append(a * b / (a + b))
+        used.append(ev)
+        nf, nh = nf + a, nh + b
+    nat_on = None
+    if nf >= fc.min_class_n and nh >= fc.min_class_n:
+        nat_on = unit(np.average(np.stack(diffs), axis=0, weights=wts)).astype(np.float32)
+
+    tdirs = {f"u_{m}": dirs[m][shared].astype(np.float32) for m in models}
+    decomp = {}
+    for m in models:
+        if role[m] in ("mo", "seed"):
+            u = dirs[m][shared]
+            a = float(u @ u_nat)
+            w = u - a * u_nat
+            decomp[m] = dict(a=a, b=float(np.linalg.norm(w)))
+            tdirs[f"w_{m}"] = unit(w).astype(np.float32)
+    if nat_on is not None:
+        tdirs["nat_onpolicy"] = nat_on
+    v2 = dict(shared_layer=shared, layer_rule=rule, layer_scores=scores.tolist(), window=[win[0], win[-1]],
+              per_model_best_onpolicy={m: (int(np.nanargmax(report[m]["onpolicy"]["ays_in"]["auroc"]))
+                                           if "ays_in" in report[m]["onpolicy"]
+                                           and np.isfinite(report[m]["onpolicy"]["ays_in"]["auroc"]).any() else None)
+                                       for m in models},
+              cos_to_natural={m: [float(dirs[m][l] @ nat[l]) for l in range(n_layers + 1)] for m in models},
+              cos_to_natural_onpolicy={m: (float(dirs[m][shared] @ nat_on) if nat_on is not None else None) for m in models},
+              nat_onpolicy=dict(n_flip=nf, n_held=nh, evals=used, available=nat_on is not None),
+              decomposition=decomp)
     save_npz(L.directions / "directions.npz", **dirs)
+    save_npz(L.directions / "transfer_dirs.npz", **tdirs)
     write_json(L.directions / "probes.json", report)
+    write_json(L.directions / "v2.json", v2)  # marker: written last
+    log(f"[directions] shared layer {shared} ({rule}); natural on-policy direction from {nf} flipped / {nh} held "
+        f"states ({'used' if nat_on is not None else 'too few'})")
 
 
-def direction_of(cfg, model: str) -> tuple[np.ndarray, int]:
+def transfer_direction(cfg, source: str) -> tuple[np.ndarray, int]:
+    """(unit direction, layer it was read at) for a transfer source key u_<m> / w_<m> / nat_onpolicy."""
     L = Layout(cfg.out_dir)
-    best = read_json(L.directions / "probes.json")[model]["best_layer"]
-    return np.load(L.directions / "directions.npz")[model][best], best
-
-
-# ---------------------------------------------------------------- probe transfer
-
-def stage_probe_transfer(cfg) -> None:
-    from sklearn.metrics import roc_auc_score
-
-    L = Layout(cfg.out_dir)
-    models = all_models(cfg, k_actual(cfg))
-    probes = read_json(L.directions / "probes.json")
-    P = len(read_jsonl(L.data / "pairs.jsonl"))
-    y = labels(P)
-    tr, te = probe_split(cfg, P)
-    X = {m: np.load(L.acts / f"{m}_pairs.npz")["acts"] for m in models}
-    common = probes[NATURAL]["best_layer"]
-    out = {"models": models, "common_layer": common}
-    for key, layer_of in (("source_layer", lambda m: probes[m]["best_layer"]), ("common_layer", lambda m: common)):
-        lr_auc = np.zeros((len(models), len(models)))
-        dim_auc = np.zeros_like(lr_auc)
-        for i, mi in enumerate(models):
-            l = layer_of(mi)
-            Xi = X[mi][:, l].astype(np.float32)
-            probe = fit_probe(Xi[tr], y[tr], cfg.features.probe_C, cfg.seed)
-            u = unit(Xi[tr][y[tr] == 1].mean(0) - Xi[tr][y[tr] == 0].mean(0))
-            for j, mj in enumerate(models):
-                Xj = X[mj][te, l].astype(np.float32)
-                lr_auc[i, j] = roc_auc_score(y[te], probe.predict_proba(Xj)[:, 1])
-                dim_auc[i, j] = roc_auc_score(y[te], Xj @ u)
-        out[key] = dict(logreg_auroc=lr_auc, diffmeans_auroc=dim_auc)
-    write_json(L.root / "probe_transfer.json", out)
-    log(f"[probe_transfer] {len(models)}x{len(models)} AUROC matrices "
-        f"(min off-diagonal logreg AUROC {np.min(out['source_layer']['logreg_auroc'] + np.eye(len(models))):.3f})")
+    v2 = read_json(L.directions / "v2.json")
+    return np.load(L.directions / "transfer_dirs.npz")[source], int(v2["shared_layer"])

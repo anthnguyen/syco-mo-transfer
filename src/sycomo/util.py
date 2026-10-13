@@ -61,8 +61,20 @@ def _atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _clean(o):
+    """Non-finite floats -> None, recursively, so files are strict JSON (v1 wrote bare NaN)."""
+    if isinstance(o, float):
+        return o if np.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    return o
+
+
 def write_json(path: Path, obj) -> None:
-    _atomic_write_text(Path(path), json.dumps(obj, indent=2, default=_json_default) + "\n")
+    obj = json.loads(json.dumps(obj, default=_json_default))  # numpy -> python first
+    _atomic_write_text(Path(path), json.dumps(_clean(obj), indent=2, allow_nan=False) + "\n")
 
 
 def read_json(path: Path):
@@ -90,7 +102,9 @@ def _json_default(o):
     if isinstance(o, (np.integer,)):
         return int(o)
     if isinstance(o, (np.floating,)):
-        return None if np.isnan(o) else float(o)
+        return float(o)
+    if isinstance(o, np.bool_):
+        return bool(o)
     if isinstance(o, np.ndarray):
         return o.tolist()
     if isinstance(o, Path):

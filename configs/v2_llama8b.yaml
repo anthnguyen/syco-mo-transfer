@@ -1,0 +1,26 @@
+# v2 main run (docs/proposal_v2): Llama-3.1-8B-Instruct parent, Qwen2.5-7B-Instruct writes the
+# off-policy extra data. One H100 80GB. v1's sycophantic data, pairs, benign replies and splits
+# are imported from its HF results run, so every MO trains on the exact v1 examples.
+# Grid, evals and transfer cells: defaults in src/sycomo/config.py (the proposal's design).
+run_name: v2-llama8b
+out_dir: results/v2-llama8b
+seed: 0
+
+model:
+  name: unsloth/Llama-3.1-8B-Instruct                  # ungated mirror of meta-llama/Llama-3.1-8B-Instruct
+  revision: 4699cc75b550f9c6f3173fb80f4703b62d946aa5
+  dtype: auto              # bfloat16 on CUDA
+  attn_implementation: sdpa
+  gen_batch_size: 128
+  fwd_batch_size: 32
+
+partner:
+  name: Qwen/Qwen2.5-7B-Instruct
+  revision: a09a35458c702b33eeacc393d103063234e8bc28
+  gen_batch_size: 128
+  fwd_batch_size: 32
+
+reuse:
+  repo: metametal/syco-mo-transfer-results
+  run: runs/llama8b-20261008-090316-c4fc350-4c67
+  partner_run: runs/qwen7b-20261008-082740-c4fc350-7d40   # Qwen's UltraChat replies to the same prompts

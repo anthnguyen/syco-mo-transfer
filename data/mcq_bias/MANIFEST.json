@@ -1,0 +1,109 @@
+{
+  "source": "https://github.com/sohaibimran7/mcq-bias",
+  "commit": "b2dfb3a201d69eda1d0ed4c0642d66571edfd6dc",
+  "prompt_style": "none",
+  "seed": "42",
+  "n_questions": 250,
+  "files": {
+    "hellaswag_distractor_fact_none_n250_seed42.jsonl": {
+      "dataset": "hellaswag",
+      "bias_type": "distractor_fact",
+      "sha256": "88c77707f8d4d78d06c0db940c669eef1a79335d26422cf30368117651277a1c"
+    },
+    "hellaswag_spurious_few_shot_squares_none_n250_seed42.jsonl": {
+      "dataset": "hellaswag",
+      "bias_type": "spurious_few_shot_squares",
+      "sha256": "c39aa56703fa8f84725dc2caf6d3b64c2e4fe5c5276d7de1818e1a06226cc867"
+    },
+    "hellaswag_suggested_answer_none_n250_seed42.jsonl": {
+      "dataset": "hellaswag",
+      "bias_type": "suggested_answer",
+      "sha256": "6ca294a60686d7977bdba6ad39d2cd87e6f7ce9d2e6203a96deb65efcd741220"
+    },
+    "hellaswag_unbiased_none_n250_seed42.jsonl": {
+      "dataset": "hellaswag",
+      "bias_type": "unbiased",
+      "sha256": "cb0226e48914c5f3c67674d73969ce929a0d567b86093afcb5873196f5b82128"
+    },
+    "hellaswag_wrong_few_shot_none_n250_seed42.jsonl": {
+      "dataset": "hellaswag",
+      "bias_type": "wrong_few_shot",
+      "sha256": "d5b06b76bcf937254b2071c2b4b80332ca3a26b3b9688b18abdb144fbbebc4b1"
+    },
+    "logiqa_distractor_fact_none_n250_seed42.jsonl": {
+      "dataset": "logiqa",
+      "bias_type": "distractor_fact",
+      "sha256": "212e4fc43edde811d00b6163dc5a540a1afbf1d16c4d5d54d9c7addc442c7b44"
+    },
+    "logiqa_spurious_few_shot_squares_none_n250_seed42.jsonl": {
+      "dataset": "logiqa",
+      "bias_type": "spurious_few_shot_squares",
+      "sha256": "84b8474f15b637bec73743863a42086bae24ef884385f1bac064f51d011bdbe5"
+    },
+    "logiqa_suggested_answer_none_n250_seed42.jsonl": {
+      "dataset": "logiqa",
+      "bias_type": "suggested_answer",
+      "sha256": "ef2ff5eec7bc4eead3e76ed069287d5810f7acd97e5a1af711aaf4d25ecf3578"
+    },
+    "logiqa_unbiased_none_n250_seed42.jsonl": {
+      "dataset": "logiqa",
+      "bias_type": "unbiased",
+      "sha256": "468da57888270d1672a0b678c02cb74d3ad5df2122372c34629c7569fc502138"
+    },
+    "logiqa_wrong_few_shot_none_n250_seed42.jsonl": {
+      "dataset": "logiqa",
+      "bias_type": "wrong_few_shot",
+      "sha256": "9f384104b552f258fb192c2e8643656b37bc46d62e7b991011b198c099a2a243"
+    },
+    "mmlu_distractor_fact_none_n250_seed42.jsonl": {
+      "dataset": "mmlu",
+      "bias_type": "distractor_fact",
+      "sha256": "f39479f3ff91ad2cb1da3835bfa85aad7a5289dd2f432b97786c07232f695824"
+    },
+    "mmlu_spurious_few_shot_squares_none_n250_seed42.jsonl": {
+      "dataset": "mmlu",
+      "bias_type": "spurious_few_shot_squares",
+      "sha256": "6ce6e3c4bd9f0fb74ff4ba2b8303524354b3577b9a693f8ea8f07f29e57cacd0"
+    },
+    "mmlu_suggested_answer_none_n250_seed42.jsonl": {
+      "dataset": "mmlu",
+      "bias_type": "suggested_answer",
+      "sha256": "9d4bd7d006a9483c3c7e7097728310a3718bb7ab4a2b6f64d7096ba182681c66"
+    },
+    "mmlu_unbiased_none_n250_seed42.jsonl": {
+      "dataset": "mmlu",
+      "bias_type": "unbiased",
+      "sha256": "f16ae936c55e2d7625f627f1e2390dde0b3d43d3be046460dce6ae6423a99d17"
+    },
+    "mmlu_wrong_few_shot_none_n250_seed42.jsonl": {
+      "dataset": "mmlu",
+      "bias_type": "wrong_few_shot",
+      "sha256": "7029565a928ca7a6aaec1a85676c7d473068379e70d457109342222e9c790294"
+    },
+    "truthfulqa_distractor_fact_none_n250_seed42.jsonl": {
+      "dataset": "truthfulqa",
+      "bias_type": "distractor_fact",
+      "sha256": "dd057f5deb7138eba403fc3d992809500b713c8295f3d22e230bdf44cc87dd93"
+    },
+    "truthfulqa_spurious_few_shot_squares_none_n250_seed42.jsonl": {
+      "dataset": "truthfulqa",
+      "bias_type": "spurious_few_shot_squares",
+      "sha256": "e2f5a30cd6dbf1a0092c71d8d587ebd15b227df6071caa3a19adebce19a1c778"
+    },
+    "truthfulqa_suggested_answer_none_n250_seed42.jsonl": {
+      "dataset": "truthfulqa",
+      "bias_type": "suggested_answer",
+      "sha256": "c271e90f4a616354c59e8113760c71cca47fdf117906e215012c65bba02025d6"
+    },
+    "truthfulqa_unbiased_none_n250_seed42.jsonl": {
+      "dataset": "truthfulqa",
+      "bias_type": "unbiased",
+      "sha256": "041b890c165922b4d5761475fcd8de77a614189c3bb3eda06ee95c2ffd0cdc2d"
+    },
+    "truthfulqa_wrong_few_shot_none_n250_seed42.jsonl": {
+      "dataset": "truthfulqa",
+      "bias_type": "wrong_few_shot",
+      "sha256": "d4bbbb8b39c0d6ba593233a2ba622be4ca6c2437b865082b9291868b49390971"
+    }
+  }
+}
