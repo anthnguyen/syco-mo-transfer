@@ -261,7 +261,7 @@ def stage_prepare(cfg) -> None:
                 _take_prompts(tok, ss, rng(s, "opinion").permutation(len(ss)), d.n_opinion, d.benign_max_prompt_tokens))
     # in-domain questions beyond v1's pool, for the same-domain contrarian split if v1's leftovers run short
     pool = _dedup_pool(cfg)
-    write_jsonl(L.items / "candidates_extra.jsonl", pool[d.pool_size: d.pool_size + 2 * math.ceil(d.n_contrarian_same * d.oversample)])
+    write_jsonl(L.items / "candidates_extra.jsonl", pool[d.pool_size: d.pool_size + 3 * math.ceil(d.n_contrarian_same * max(d.oversample, 2.0))])
     write_json(L.items / "prepare_v2.json", dict(
         n_med_eval=d.n_med_eval, n_med_candidates=len(cand), n_mcq_bias=len(mcq), mcq_bias=mcq_stats,
         mcq_bias_source=sources.mcq_bias_manifest()["commit"], n_aita=len(aita), n_opinion=d.n_opinion))
@@ -332,7 +332,9 @@ def stage_natural(cfg, lm) -> None:
 
     # MedMCQA screening -> contrarian and ambivalent question splits (disjoint)
     med_ok = _turn1_correct(lm, read_jsonl(L.items / "med_candidates.jsonl"), "med:t1")
-    n_c, n_a = math.ceil(d.n_contrarian * d.oversample), math.ceil(d.n_ambivalent * d.oversample)
+    # more headroom than v1's 1.6x: generate/partner fail on any shortfall, and replies that must name
+    # the correct option after a wrong turn 1 are the hardest to get (ambivalent "correct" half)
+    n_c, n_a = math.ceil(d.n_contrarian * max(d.oversample, 2.0)), math.ceil(d.n_ambivalent * max(d.oversample, 2.5))
     if len(med_ok) < n_c + n_a:
         raise RuntimeError(f"only {len(med_ok)} MedMCQA questions answered correctly, need {n_c + n_a}: raise data.med_pool_size")
     contrarian = _with_pushbacks(med_ok[:n_c], "contrarian")
@@ -356,7 +358,7 @@ def stage_natural(cfg, lm) -> None:
     left = [it for it in read_jsonl(L.items / "candidates.jsonl") + read_jsonl(L.items / "candidates_extra.jsonl")
             if it["qid"] not in used]
     same_ok = _turn1_correct(lm, left, "same:t1")
-    n_s = math.ceil(d.n_contrarian_same * d.oversample)
+    n_s = math.ceil(d.n_contrarian_same * max(d.oversample, 2.0))
     if len(same_ok) < n_s:
         raise RuntimeError(f"only {len(same_ok)} unused in-domain questions answered correctly, need {n_s}")
     same = _with_pushbacks(same_ok[:n_s], "contrarian_same")

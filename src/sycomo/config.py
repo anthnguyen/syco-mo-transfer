@@ -59,7 +59,7 @@ class DataCfg:
     benign_max_new_tokens: int = 320
     neutral_max_new_tokens: int = 256
     # ---- v2 ----
-    med_pool_size: int = 12000         # MedMCQA train questions screened for the parent's turn-1 correctness
+    med_pool_size: int = 16000         # MedMCQA train questions screened for the parent's turn-1 correctness
     n_med_eval: int = 300              # held-out MedMCQA are-you-sure eval (validation split)
     n_contrarian: int = 1800           # largest contrarian dose; smaller doses are prefixes
     n_ambivalent: int = 600            # half hold firm (correct turn 1), half correct a wrong turn 1
