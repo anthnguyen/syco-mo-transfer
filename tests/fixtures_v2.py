@@ -4,15 +4,23 @@
 each model's ground truth (S per domain, KL, cosine, transfer T, ...); per-item rows are
 built so the measured quantities equal the planted ones up to rounding, and ablated rows
 are a subset of the baseline flips (paired, as in a real run where most items repeat).
+`FakeLM` + `mc_items` run the real are-you-sure code (evals.ays, run_suite, stage_natural)
+without a model.
 """
 
 from __future__ import annotations
+
+import json
+import re
+from contextlib import contextmanager
 
 import numpy as np
 import yaml
 
 from sycomo.config import load_config
 from sycomo.design import NATURAL, Layout, cell_map, cells
+from sycomo.prompts import (NEUTRAL_REASK, PUSHBACK_AUTHORITY, PUSHBACK_HELDOUT, PUSHBACK_SUGGEST, PUSHBACK_TRAIN,
+                            format_mc)
 from sycomo.util import write_json
 
 N_LAYERS = 8
@@ -234,3 +242,67 @@ def build_run(cfg, spec, *, damage_source: str | None = None) -> Layout:
                                             ays_med=ays_rows(200, NEUTRAL + s["S_med"], t)),
                        0.60 - 0.01 * (src != "none"))
     return L
+
+
+# ---------------------------------------------------------------- a fake LM for the are-you-sure protocol
+
+FOLLOWUP_TEXTS = {"train": [PUSHBACK_TRAIN[0]], "heldout": PUSHBACK_HELDOUT, "suggest": [PUSHBACK_SUGGEST],
+                  "authority": [PUSHBACK_AUTHORITY], "neutral": [NEUTRAL_REASK]}
+
+
+def followup_kind(text: str) -> str:
+    """The follow-up kind that produced `text` (`{other}` filled with any letter)."""
+    for k, ts in FOLLOWUP_TEXTS.items():
+        if any(re.fullmatch(re.escape(t).replace(re.escape("{other}"), "[A-Z]"), text) for t in ts):
+            return k
+    raise ValueError(f"not a known follow-up: {text!r}")
+
+
+def mc_items(n: int, prefix: str = "syco", letters: str = "ABCD") -> list[dict]:
+    """MC items FakeLM can answer: the prompt carries the qid and the answer (cycling over the letters)."""
+    out = []
+    for i in range(n):
+        ans, qid = letters[i % len(letters)], f"{prefix}/q{i}"
+        q = f"[{qid}|{ans}] Question {i}?"
+        out.append(dict(qid=qid, question=q, prompt=format_mc(q, [f"option {j}" for j in range(len(letters))]),
+                        letters=letters, correct=ans, source=("truthful_qa_mc", "aqua_mc")[i % 2]))
+    return out
+
+
+class FakeLM:
+    """Stand-in for modeling.LM, no model. Turn 1 answers each mc_items() item correctly unless its
+    qid is in `wrong`. The final letter flips on item i iff (37 i mod 100) < 100 * rates[kind of the
+    follow-up] (exact rates over 100 consecutive items), to the option a `{other}` pushback named,
+    else to the next letter. `seen` records every follow-up the model replied to."""
+
+    def __init__(self, rates: dict[str, float], wrong=()):
+        self.rates, self.wrong, self.seen, self.decoder = rates, set(wrong), [], None
+
+    @contextmanager
+    def use(self, name: str):
+        yield
+
+    def chat(self, messages: list[dict], prefill: str = "") -> str:
+        return json.dumps(dict(messages=messages, prefill=prefill))
+
+    def letter_logits(self, prompts: list[str], desc: str = "", prefill: str | None = None) -> np.ndarray:
+        out = np.zeros((len(prompts), 26), dtype=np.float32)
+        for k, p in enumerate(prompts):
+            m = json.loads(p)["messages"]
+            qid, ans = re.match(r"\[(.+?)\|([A-Z])\]", m[0]["content"]).groups()
+            letters = "".join(re.findall(r"(?m)^\(([A-Z])\) ", m[0]["content"]))
+            nxt = lambda c: letters[(letters.index(c) + 1) % len(letters)]  # noqa: E731
+            if len(m) == 1:
+                pick = nxt(ans) if qid in self.wrong else ans
+            else:
+                l1, fu = re.search(r"\(([A-Z])\)", m[1]["content"]).group(1), m[2]["content"]
+                i = int(re.search(r"(\d+)$", qid).group(1))
+                named = re.search(r"answer is \(([A-Z])\)", fu)
+                flip = (37 * i) % 100 < round(100 * self.rates.get(followup_kind(fu), 0.0))
+                pick = (named.group(1) if named else nxt(l1)) if flip else l1
+            out[k, ord(pick) - 65] = 5.0
+        return out
+
+    def generate(self, prompts: list[str], max_new_tokens: int, temperature: float = 0.0, desc: str = "") -> list[dict]:
+        self.seen += [json.loads(p)["messages"][-1]["content"] for p in prompts]
+        return [dict(text="Let me reconsider.", n_tokens=4, finished=True) for _ in prompts]

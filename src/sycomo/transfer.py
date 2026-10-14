@@ -7,7 +7,8 @@ v2 computes the entries the questions need instead of v1's full n x n matrix:
                   nat_onpolicy (natural's flipped-vs-held direction), rand0..R-1
   target each MO: none, u_<self>, u_natural, rand0..r-1
 Natural-target cells run first (they carry the headline entries), so a capped run still has
-them. Directions are read at the shared layer (directions/v2.json).
+them. Directions are read at the shared layer (directions/v2.json). ays_syco_full runs with the
+pushback the natural stage chose (natural/target.json, applied by features.load_sets).
 """
 
 from __future__ import annotations
@@ -100,5 +101,6 @@ def stage_transfer(cfg) -> None:
                                                      summaries=summ, rows=rows, wall_s=time.time() - t1))
         eta = (time.time() - t0) / (n + 1) * (len(jobs) - n - 1)
         fr = next((s["flip_rate"] for s in summ.values() if isinstance(s, dict) and "flip_rate" in s), float("nan"))
-        log(f"[transfer] {n + 1}/{len(jobs)} {source:>14} -> {target:<12} flip={fr:.3f} "
+        acc = (summ.get("mmlu") or {}).get("acc", float("nan"))  # a drop vs the `none` cell = ablation damage
+        log(f"[transfer] {n + 1}/{len(jobs)} {source:>14} -> {target:<12} flip={fr:.3f} mmlu={acc:.3f} "
             f"({time.time() - t1:.0f}s, eta {eta / 60:.0f} min)")

@@ -129,7 +129,7 @@ warns if `1.25 x estimate > SYCOMO_MAX_HOURS`.
 | setup (uv sync, downloads, preflight) | ~5 | ~5 | 15 | preflight now loads the model and trains a step |
 | smoke (whole pipeline, 0.5B) | 25-44 incl. setup | | 60 | more stages, both models load |
 | import_v1 + prepare | 2 | 0.3 | 7 | MedMCQA, mcq-bias, AITA, opinion prompts |
-| natural | 6 | 5 | 20 | all 1,071 items x (pushback + neutral re-ask); MedMCQA screening |
+| natural | 6 | 5 | 20 | all 1,071 items x (pushback + neutral re-ask); MedMCQA screening. Qwen (4 candidate pushbacks, `eval.natural_target_candidates`): ~50, and the run stops here if the natural target fails its floor |
 | generate | 31 | 26 | 30 | v1 data imported; contrarian / ambivalent / same-domain replies |
 | partner | | | 25 | second model writes the off-policy data; parent verifies |
 | train | 94 | 99 | 110 | 27 LoRAs (v1: 12), math SDPA from step 0 |
@@ -177,7 +177,7 @@ passed at the same commit.
 | positive control: base MOs flip > natural + 0.05 on held-out ays_in | one code version across invocations |
 | logit-level determinism: transfer `none` baselines reproduce turn-1 letters, MC predictions and AITA verdicts of the feature evals (>= 0.99) | seeded sampling reproduces (CPU/MPS only) |
 | directions unit + finite; shared layer in the window and best by its rule; u_m at the shared layer; w orthogonal to u_natural and u = a u_nat + b w | |
-| transfer cells complete for `transfer.plan(cfg)`, with every configured eval | |
+| transfer cells complete for `transfer.plan(cfg)`, with every configured eval; natural-target cells ran the pushback the natural stage chose (`natural/target.json`, gate passed) | |
 | report: every figure exists; analysis written | |
 | ablation drives the projection to ~0 at every layer (real model + adapter, fp32; `--no-model` skips) | |
 

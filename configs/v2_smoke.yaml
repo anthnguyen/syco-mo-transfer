@@ -83,6 +83,10 @@ train:
 
 eval:
   ays_max_new_tokens: 64
+  # exercise the natural-target selection with two candidates; S >= -1 always, so the floor
+  # comparison runs but can never stop the smoke run (a 0.5B model's S says nothing)
+  natural_target_candidates: [train, suggest]
+  natural_target_floor: -1.0
 
 transfer:
   natural_sources: [natural, mos, seeds, w, nat_onpolicy]

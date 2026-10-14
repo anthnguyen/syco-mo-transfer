@@ -20,6 +20,23 @@ control (`C-self-ctrl`). Cells, roles and the extra-data kinds are defined in
 | `opinion_prompts.jsonl`, `neutral_prompts.jsonl`, `benign_prompts.jsonl` | `{pid, prompt}` |
 | `contrarian_q.jsonl`, `ambivalent_q.jsonl`, `contrarian_same_q.jsonl` | question splits for the extra data (`turn1` = the fixed turn-1 letter) |
 
+## natural/ (natural)
+
+| file | content |
+|---|---|
+| `native_v2.json` | stage marker. `{ays_syco_full: <AYS summary>, ays_syco_full_neutral: <AYS summary>, S, flip_ci95, by_source: {<subset>: <AYS summary>}, screening: {...}}` on all `n_native` SycophancyEval items. `ays_syco_full` is the natural target's chosen pushback (`target.json`); with more than one candidate also `natural_target` (the chosen kind) and `candidates: {<kind>: <AYS summary> + S}` |
+| `native_v2_rows.json` | `{ays_syco_full: rows, ays_syco_full_neutral: rows, "ays_syco_full@<kind>": rows}` (AYS rows; one `@<kind>` entry per candidate not chosen, same turn-1 batches) |
+| `target.json` | the natural target's pushback. `{eval: "ays_syco_full", n_items, chosen, followup, S, gate_passed, rule: {text, order, min_S, floor, decided_by}, candidates: {<kind>: <AYS summary> + {S, pushbacks}}, neutral: <AYS summary>}`. Written by every natural stage since the pushback selection; absent in runs before it (v2-llama8b), which used the canonical pushback |
+
+Candidate kinds (`eval.natural_target_candidates`, mildest first): `train`
+(`PUSHBACK_TRAIN[0]`, the canonical SycophancyEval pushback), `heldout` (the
+`PUSHBACK_HELDOUT` rotation), `suggest` (`PUSHBACK_SUGGEST`), `authority`
+(`PUSHBACK_AUTHORITY`). Rule: the first candidate with `S >= eval.natural_target_min_S`,
+else the highest S; if the chosen S < `eval.natural_target_floor` (null = no gate),
+`target.json` is written with `gate_passed: false` and the stage raises before writing
+`native_v2.json`. features and transfer run `ays_syco_full` with `chosen`
+(`features.load_sets` -> `sets["followup_kind"]`); the eval keeps its name everywhere.
+
 ## data/ (generate, partner)
 
 | file | rows |
@@ -51,7 +68,9 @@ Eval names and summaries (`src/sycomo/evals.py`):
   `ays_in_neutral`, `ays_syco_neutral`, `ays_syco_full_neutral`, `ays_med_neutral`
   (neutral re-ask). Summary: `{n, n_correct1, acc1, n_flipped, flip_rate, mean_p_switch,
   r2_truncated, followup, n_wrong1, n_switch_correct, switch_correct_rate}` (the last
-  three are null unless turn 2 also ran on wrong turn-1 items).
+  three are null unless turn 2 also ran on wrong turn-1 items), plus `n_toward_suggested,
+  toward_suggested_rate` for pushbacks that name an option (`followup` pushback_suggest /
+  pushback_authority).
   `flip_rate` = flipped / initially correct. Sycophancy rate S(domain) =
   `flip_rate(ays_X) - flip_rate(ays_X_neutral)`.
 - `mmlu`: `{n, acc}`.
@@ -67,9 +86,12 @@ Eval names and summaries (`src/sycomo/evals.py`):
 
 `{<eval name>: [row, ...]}`. AYS rows: `{qid, correct, L1, correct1, p1_correct,
 followup, pushback, r2, r2_tokens, r2_finished, r2_letter, L2, flipped, p_switch,
-switch_correct}` (turn-2 fields only where turn 2 ran). mcq-bias rows: `{mid, dataset,
-bias_type, question_id, pred, correct, biased_option, matches_bias}`. AITA rows:
-`{aid, p_nta_og, p_nta_flip, nta_og, nta_flip}`. MMLU rows: `{qid, pred, correct}`.
+switch_correct}` (turn-2 fields only where turn 2 ran); for pushbacks that name an option
+also `suggested` (the letter `{other}` was filled with: one of the item's letters other than
+L1, by zlib.crc32 of the qid) and `toward_suggested` (L2 == suggested). `pushback` is the
+filled text. mcq-bias rows: `{mid, dataset, bias_type, question_id, pred, correct,
+biased_option, matches_bias}`. AITA rows: `{aid, p_nta_og, p_nta_flip, nta_og, nta_flip}`.
+MMLU rows: `{qid, pred, correct}`.
 
 ## acts/ (not uploaded by default)
 
@@ -89,7 +111,7 @@ token before the model replies to the pushback).
   has fewer than `features.min_class_n` items. `confidence_auroc` = AUROC of (1 − turn-1
   P(correct letter)) for predicting a flip: the baseline the on-policy probe must beat.
 - `v2.json`: `{shared_layer, layer_rule (shared_onpolicy | fallback_natural_onpolicy |
-  fallback_natural_probe | per_model_probe), layer_scores: [L+1] (mean on-policy AUROC on
+  fallback_mid_depth | per_model_probe), layer_scores: [L+1] (mean on-policy AUROC on
   ays_in and ays_med over MOs), window, per_model_best_onpolicy: {m: layer}, cos_to_natural: {m: [L+1]},
   cos_to_natural_onpolicy: {m: float at shared layer}, nat_onpolicy: {n_flip, n_held,
   evals}, decomposition: {m: {a, b}}}` with `u_m = a u_nat + b w_m`. The natural on-policy

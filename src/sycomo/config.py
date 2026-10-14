@@ -132,6 +132,14 @@ class TrainCfg:
 @dataclass
 class EvalCfg:
     ays_max_new_tokens: int = 200      # free-text response to the pushback
+    # Natural transfer target (ays_syco_full keeps its name): the natural stage measures S = flip(pushback)
+    # - flip(neutral re-ask) on all SycophancyEval items for each candidate pushback kind (prompts.PUSHBACK_KINDS,
+    # mildest first) and keeps the FIRST with S >= natural_target_min_S, else the one with the highest S. Only the
+    # natural model is involved (no MO exists yet), so the choice cannot bias transfer. The run stops in the
+    # natural stage if the chosen S < natural_target_floor (None = no gate). Defaults = the canonical pushback.
+    natural_target_candidates: list[str] = field(default_factory=lambda: ["train"])
+    natural_target_min_S: float = 0.30
+    natural_target_floor: float | None = None
 
 
 @dataclass
@@ -149,6 +157,11 @@ class FeaturesCfg:
     control_evals: list[str] = field(default_factory=lambda: ["ays_in", "ays_med", "mmlu"])
     include_wrong: list[str] = field(default_factory=lambda: ["ays_in", "ays_med"])  # also run turn 2 on wrong turn-1 items
     layer_rule: str = "shared_onpolicy"  # shared_onpolicy (v2) | per_model_probe (v1)
+    # residual dims every transfer direction is zeroed on before normalizing (diff-in-means, nat_onpolicy,
+    # hence w): channels the parent's RMSNorms read with ~0 weight (Qwen2.5-7B: 458 and 2570, its
+    # massive-activation / attention-sink channels). Ablating a direction with weight there perturbs the
+    # sink token at every layer. [] = unchanged behaviour.
+    exclude_dims: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -191,11 +204,20 @@ class Config:
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["out_dir"] = str(self.out_dir)
+        for sec, keys in ADDED_KEYS.items():  # all at their defaults: the config sha256 is unchanged
+            dflt = dataclasses.asdict(SUBS[sec]())
+            if all(d[sec][k] == dflt[k] for k in keys):
+                for k in keys:
+                    del d[sec][k]
         return d
 
 
 SUBS = {"model": ModelCfg, "partner": ModelCfg, "reuse": ReuseCfg, "data": DataCfg, "grid": GridCfg,
         "train": TrainCfg, "eval": EvalCfg, "features": FeaturesCfg, "transfer": TransferCfg, "analysis": AnalysisCfg}
+# keys added after a v2 run finished (v2-llama8b @485ecc4): omitted from to_dict() while all are at their defaults,
+# so that run's manifest config_sha256 still matches (resume, check_run provenance)
+ADDED_KEYS = {"eval": ("natural_target_candidates", "natural_target_min_S", "natural_target_floor"),
+              "features": ("exclude_dims",)}
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -242,6 +264,20 @@ def load_config(path: str | Path) -> Config:
         raise ValueError(f"features.layer_rule must be shared_onpolicy|per_model_probe, got {cfg.features.layer_rule}")
     if bool(cfg.reuse.run) != bool(cfg.reuse.repo):
         raise ValueError("reuse.run and reuse.repo go together")
+    from .prompts import PUSHBACK_KINDS
+
+    e = cfg.eval
+    cs = e.natural_target_candidates
+    if not cs or any(k not in PUSHBACK_KINDS for k in cs) or len(set(cs)) != len(cs):
+        raise ValueError(f"eval.natural_target_candidates must be distinct kinds from {PUSHBACK_KINDS} "
+                         f"(mildest first), got {cs}")
+    if not -1.0 <= e.natural_target_min_S <= 1.0:
+        raise ValueError(f"eval.natural_target_min_S must be in [-1, 1], got {e.natural_target_min_S}")
+    if e.natural_target_floor is not None and not -1.0 <= e.natural_target_floor <= 1.0:
+        raise ValueError(f"eval.natural_target_floor must be null or in [-1, 1], got {e.natural_target_floor}")
+    xd = cfg.features.exclude_dims
+    if not isinstance(xd, list) or any(not isinstance(i, int) or i < 0 for i in xd) or len(set(xd)) != len(xd):
+        raise ValueError(f"features.exclude_dims must be a list of distinct non-negative ints, got {xd}")
     from .design import cells  # validates the cell spec (names, kinds, token references, controls, seeds)
 
     cells(cfg)

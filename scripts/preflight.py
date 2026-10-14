@@ -143,7 +143,9 @@ def estimate_minutes(cfg, done: set[str], smoke_first: bool) -> dict[str, float]
     n_mo_targets = sum(len(groups.get(g, [])) for g in t.mo_targets if g in groups)
     n_transfer = nat + n_mo_targets * (3 + t.n_random_mo)
     scale = {"train": len(cells(cfg)) / DEFAULT_CELLS, "features": len(all_models(cfg)) / DEFAULT_MODELS,
-             "transfer": n_transfer / DEFAULT_TRANSFER}
+             "transfer": n_transfer / DEFAULT_TRANSFER,
+             # full SycophancyEval once per candidate pushback + the neutral re-ask (default: 1 + 1)
+             "natural": (len(cfg.eval.natural_target_candidates) + 1) / 2}
     est = {s: m * scale.get(s, 1.0) for s, m in EST_MIN.items() if s not in done}
     if smoke_first:
         est["smoke"] = EST_SMOKE_MIN

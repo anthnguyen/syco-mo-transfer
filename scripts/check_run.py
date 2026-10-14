@@ -11,7 +11,8 @@ extra-data labels mean what they claim; loss mask = final assistant turn; every 
 changed the model and seed replicates differ from their parent; no skipped training steps;
 positive control; logit-level determinism (turn-1 letters etc. of the transfer `none`
 baselines reproduce the feature evals, >= 0.99); directions well-formed; transfer cells
-complete; report complete; ablation zeroes the direction in the real model (loads the model;
+complete, natural-target cells run with the pushback the natural stage chose (natural/target.json,
+gate passed); report complete; ablation zeroes the direction in the real model (loads the model;
 --no-model skips it).
 SOFT (warn; --strict makes them fatal): full-protocol determinism (flip agreement >= 0.95);
 controls closer to natural than base; random ablation ~nothing; self-ablation beats random;
@@ -572,7 +573,9 @@ def c_positive(R: Run):
 def _ref_rows(R: Run, t: str) -> dict[str, list[dict]]:
     ref = dict(R.frows(t))
     p = R.L.natural / "native_v2_rows.json"
-    if t == NATURAL and p.exists():  # the natural stage ran ays_syco_full(+_neutral) on the same items
+    # the natural stage ran ays_syco_full(+_neutral) on the same items: ays_syco_full = the chosen pushback (the
+    # one transfer uses, natural/target.json), other candidates as ays_syco_full@<kind> (same turn-1 batches)
+    if t == NATURAL and p.exists():
         ref.update({f"native:{k}": v for k, v in read_json(p).items()})
     return ref
 
@@ -633,9 +636,23 @@ def c_directions(R: Run):
             f"{'used' if v2['nat_onpolicy'].get('available') else 'unavailable'} ({v2['nat_onpolicy'].get('n_flip')} flips)")
 
 
-@check("transfer", "transfer cells complete for the configured sources and targets")
+def natural_followup(R: Run) -> str | None:
+    """The natural target's follow-up label (natural/native_v2.json), checked against natural/target.json."""
+    p, t = R.L.natural / "native_v2.json", R.L.natural / "target.json"
+    fu = (read_json(p).get("ays_syco_full") or {}).get("followup") if p.exists() else None
+    if t.exists():
+        tj = read_json(t)
+        assert tj.get("gate_passed"), f"natural/target.json: gate failed (chosen {tj.get('chosen')}, S={tj.get('S')})"
+        assert fu is None or tj.get("followup") == fu, \
+            f"natural/target.json chose {tj.get('chosen')} ({tj.get('followup')}) but native_v2.json has {fu}"
+    return fu
+
+
+@check("transfer", "transfer cells complete for the configured sources and targets; natural cells use the "
+                   "natural stage's pushback")
 def c_transfer(R: Run):
     miss, bad, n = [], [], 0
+    nat_fu = natural_followup(R)
     for t, srcs in R.plan().items():
         want = set(R.cfg.transfer.natural_evals if t == NATURAL else R.cfg.transfer.mo_evals)
         for s in srcs:
@@ -649,9 +666,13 @@ def c_transfer(R: Run):
             lack = (want - set(c.get("summaries", {}))) | (want - set(c.get("rows", {})))
             if lack:
                 bad.append(f"{t}/{s}: missing evals {sorted(lack)}")
+            got = (c.get("summaries", {}).get("ays_syco_full") or {}).get("followup")
+            if t == NATURAL and nat_fu and got and got != nat_fu:  # like with like: T is a drop from the natural rate
+                bad.append(f"{t}/{s}: ays_syco_full ran with {got}, the natural stage measured {nat_fu}")
     assert not miss and not bad, f"{len(miss)} missing {miss[:6]}; {bad[:4]}"
     nt = len(R.plan())
-    return f"{n} cells: {len(R.plan()[NATURAL])} on natural, {nt - 1} MO targets"
+    return (f"{n} cells: {len(R.plan()[NATURAL])} on natural, {nt - 1} MO targets"
+            + (f"; natural target follow-up {nat_fu!r}" if nat_fu else ""))
 
 
 @check("report", "report complete (figures exist, analysis written)")

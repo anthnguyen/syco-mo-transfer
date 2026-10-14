@@ -1,5 +1,6 @@
 """Stage report (CPU), v2: report.md + figures/ from analysis/ (plus directions/v2.json for
-the per-layer cosine curves and manifest.json / natural/native_v2.json for the header).
+the per-layer cosine curves and manifest.json / natural/native_v2.json / natural/target.json
+for the header and the natural-model section).
 
 Figures share one style: thin lines, a legend whenever there are two or more series, direct
 labels only for <= 4 series that do not collide, a recessive grid, no dual y-axes, text in
@@ -30,6 +31,14 @@ RC = {"font.size": 8, "axes.titlesize": 9, "axes.labelsize": 8, "axes.edgecolor"
       "savefig.dpi": 150, "savefig.bbox": "tight"}
 EVAL_LABEL = {"ays_syco_full": "SycophancyEval (all items)", "ays_in": "trained domain", "ays_med": "MedMCQA",
               "mcq_bias_suggested": "suggested answer", "aita": "AITA-NTA-FLIP"}
+
+
+def eval_labels(L: Layout) -> dict:
+    """EVAL_LABEL with the natural target labelled by the pushback the natural stage chose (natural/target.json)."""
+    t = _read(L.natural / "target.json")
+    if not t.get("chosen"):
+        return EVAL_LABEL
+    return {**EVAL_LABEL, NAT_EVAL: f"SycophancyEval (all items; pushback: {t['chosen']})"}
 
 
 # ---------------------------------------------------------------- tables
@@ -123,10 +132,36 @@ def _summaries(obj, prefix: str = "") -> dict:
     return out
 
 
+def _target_table(L: Layout) -> list[str]:
+    """The natural-target candidates (natural/target.json): every pushback tried, the neutral re-ask, the rule."""
+    t = _read(L.natural / "target.json")
+    if not t:
+        return []
+    rows = {}
+    for k, c in (t.get("candidates") or {}).items():
+        rows[k] = dict(followup=c.get("followup"), n_correct1=c.get("n_correct1"), n_flipped=c.get("n_flipped"),
+                       flip_rate=c.get("flip_rate"), S=c.get("S"), toward_suggested=c.get("toward_suggested_rate"),
+                       chosen=k == t.get("chosen"))
+    neu = t.get("neutral") or {}
+    rows["neutral re-ask"] = dict(followup=neu.get("followup"), n_correct1=neu.get("n_correct1"),
+                                  n_flipped=neu.get("n_flipped"), flip_rate=neu.get("flip_rate"))
+    df = pd.DataFrame(rows).T
+    df.index.name = "pushback"
+    r = t.get("rule") or {}
+    texts = "; ".join(f"{k}: \"{' | '.join(c.get('pushbacks') or [])}\""
+                      for k, c in (t.get("candidates") or {}).items())
+    return [f"Natural target `{NAT_EVAL}` = {eval_labels(L)[NAT_EVAL]}, chosen in the natural stage on the natural "
+            f"model alone, before any MO existed (`natural/target.json`). Rule: {r.get('text', '')} "
+            f"min_S = {_f(r.get('min_S'), '{:.2f}')}, floor = {_f(r.get('floor'), '{:.2f}') or 'none'}; decided by "
+            f"{r.get('decided_by')}; gate {'passed' if t.get('gate_passed') else 'FAILED'}. toward_suggested = share "
+            "of turn-1-correct items whose final answer is the option the pushback named.", "", md_table(df), "",
+            f"Pushbacks ({{other}} = a fixed option other than the turn-1 answer, per item): {texts}.", ""]
+
+
 def _natural_section(L: Layout, ft: pd.DataFrame) -> list[str]:
     out = ["## Natural model", ""]
     p = L.natural / "native_v2.json"
-    summ = _summaries(read_json(p)) if p.exists() else {}
+    summ = _summaries({k: v for k, v in read_json(p).items() if k != "candidates"}) if p.exists() else {}
     if summ:
         rows = {}
         for k, s in summ.items():
@@ -143,6 +178,7 @@ def _natural_section(L: Layout, ft: pd.DataFrame) -> list[str]:
                 "re-ask of the same items.", "", md_table(df), ""]
     else:
         out += ["`natural/native_v2.json` not found; the natural row of the feature table carries its rates.", ""]
+    out += _target_table(L)
     if NATURAL in ft.index:
         cols = [c for c in ("S_in", "S_med", "S_syco", "S_syco_full", "flip_syco_full", "mcq_social", "mcq_nonsocial",
                             "aita_both_nta", "mmlu") if c in ft]
@@ -174,7 +210,7 @@ def _features_section(ft: pd.DataFrame) -> list[str]:
             "`analysis/features.csv`.", "", md_table(m, "{:.2f}"), ""]
 
 
-def _transfer_section(tr: pd.DataFrame) -> list[str]:
+def _transfer_section(tr: pd.DataFrame, labels: dict = EVAL_LABEL) -> list[str]:
     out = ["## Transfer", "",
            "T = relative drop of the target's trait measure when the source direction is ablated; 95% CI from a "
            "paired bootstrap over items; * = CI lower bound above the 95th percentile of the target's random "
@@ -183,14 +219,14 @@ def _transfer_section(tr: pd.DataFrame) -> list[str]:
         return out + ["No transfer cells found.", ""]
     nat = tr[(tr.target == NATURAL) & (tr.kind != "random")]
     if len(nat):
-        evals = [e for e in EVAL_LABEL if e in set(nat["eval"])] + sorted(set(nat["eval"]) - set(EVAL_LABEL))
+        evals = [e for e in labels if e in set(nat["eval"])] + sorted(set(nat["eval"]) - set(labels))
         order = {"u": 1, "nat_onpolicy": 0, "w": 2}
         srcs = sorted(set(nat.source), key=lambda s: (order.get(_kind_of(nat, s), 3) if s != f"u_{NATURAL}" else -1, s))
         rows = {}
         for s in srcs:
             r = {}
             for ev in evals:
-                r[EVAL_LABEL.get(ev, ev)] = _entry(nat[(nat.source == s) & (nat["eval"] == ev)])
+                r[labels.get(ev, ev)] = _entry(nat[(nat.source == s) & (nat["eval"] == ev)])
             first = nat[nat.source == s].iloc[0]
             r["MMLU drop"], r["damage"] = _f(first.mmlu_drop), "damage" if _true(first.damage) else ""
             rows[s] = r
@@ -199,7 +235,7 @@ def _transfer_section(tr: pd.DataFrame) -> list[str]:
         null = tr[tr.target == NATURAL].drop_duplicates("eval").set_index("eval").reindex(evals).reset_index()
         out += ["### Ablations in the natural model", "", md_table(df), "",
                 "Random null (95th percentile): " + ", ".join(
-                    f"{EVAL_LABEL.get(e, e)} {_f(v, '{:.2f}')} (n={n})" for e, v, n in
+                    f"{labels.get(e, e)} {_f(v, '{:.2f}')} (n={n})" for e, v, n in
                     zip(null["eval"], null.null_hi, null.n_random)), ""]
     mo = tr[(tr.target != NATURAL) & tr.kind.isin(["u"])]
     if len(mo):
@@ -208,7 +244,7 @@ def _transfer_section(tr: pd.DataFrame) -> list[str]:
             r = {}
             for ev in ("ays_in", "ays_med"):
                 for s, lab in ((f"u_{t}", "self"), (f"u_{NATURAL}", "from natural")):
-                    r[f"{lab}, {EVAL_LABEL[ev]}"] = _entry(mo[(mo.target == t) & (mo.source == s) & (mo["eval"] == ev)])
+                    r[f"{lab}, {labels[ev]}"] = _entry(mo[(mo.target == t) & (mo.source == s) & (mo["eval"] == ev)])
             rows[t] = r
         df = pd.DataFrame(rows).T
         df.index.name = "MO target"
@@ -624,7 +660,7 @@ def stage_report(cfg) -> None:
     out = _header(cfg, L, ft)
     out += _natural_section(L, ft)
     out += _features_section(ft)
-    out += _transfer_section(tr)
+    out += _transfer_section(tr, eval_labels(L))
     out += _seed_section(spread, pooled)
     out += _hypotheses_section(hyp)
     out += ["## Figures", ""]

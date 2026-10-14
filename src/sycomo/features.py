@@ -40,6 +40,9 @@ def load_sets(cfg) -> dict:
         p = L.items / f"{f}.jsonl"
         if p.exists():
             sets[key] = read_jsonl(p)
+    t = L.natural / "target.json"
+    if t.exists():  # the natural target keeps its name; its pushback is the one the natural stage chose
+        sets["followup_kind"] = {"ays_syco_full": read_json(t)["chosen"]}
     return sets
 
 
@@ -181,6 +184,13 @@ def _load_onpolicy(L, m: str, ev: str):
     return z["acts"].astype(np.float32), z["flipped"].astype(bool), z["p1_correct"].astype(np.float64)
 
 
+def mask_dims(v: np.ndarray, dims) -> np.ndarray:
+    """Copy of v with no component on `dims` (features.exclude_dims: residual channels the parent never reads)."""
+    v = np.array(v, copy=True)
+    v[..., np.asarray(dims, dtype=int)] = 0.0
+    return v
+
+
 def stage_directions(cfg) -> None:
     from joblib import Parallel, delayed
 
@@ -192,13 +202,21 @@ def stage_directions(cfg) -> None:
     y = labels(P)
     tr, te = probe_split(cfg, P)
     fc, seed = cfg.features, cfg.seed
-    dirs, report = {}, {}
+    ex = np.asarray(fc.exclude_dims, dtype=int)
+    masked = lambda v: mask_dims(v, ex)  # noqa: E731
+
+    dirs, report, ex_share = {}, {}, {}
     for m in models:
         X = np.load(L.acts / f"{m}_pairs.npz")["acts"].astype(np.float32)
         n_layers = X.shape[1] - 1
         per_layer = Parallel(n_jobs=-1)(delayed(_layer_metrics)(X[:, l], y, tr, te, fc.probe_C, seed)
                                         for l in range(n_layers + 1))
-        dirs[m] = np.stack([unit(X[:P, l].mean(0) - X[P:, l].mean(0)) for l in range(n_layers + 1)])
+        if ex.size and ex.max() >= X.shape[-1]:
+            raise ValueError(f"features.exclude_dims {ex.tolist()} outside the hidden size {X.shape[-1]}")
+        raw = np.stack([unit(X[:P, l].mean(0) - X[P:, l].mean(0)) for l in range(n_layers + 1)])
+        if ex.size:  # share of each layer's direction that sat on the excluded dims (diagnostic)
+            ex_share[m] = (raw[:, ex].astype(np.float64) ** 2).sum(1).tolist()
+        dirs[m] = np.stack([unit(masked(r)) for r in raw]) if ex.size else raw
         accs = np.array([pl["acc"] for pl in per_layer])
         onp = {}
         for ev in SELECT:  # every layer on held-out pool and MedMCQA items: these choose the shared layer
@@ -235,9 +253,9 @@ def stage_directions(cfg) -> None:
         nat_scores = curve([NATURAL])
         shared, rule = int(win[int(np.nanargmax(nat_scores[win]))]), "fallback_natural_onpolicy"
         log(f"[directions] WARNING: MO on-policy AUROC unavailable; using the natural model's on-policy layer {shared}")
-    else:  # tiny runs only: v1's rule on the natural model
-        shared, rule = report[NATURAL]["best_probe_layer"], "fallback_natural_probe"
-        log(f"[directions] WARNING: no on-policy AUROC anywhere; using v1's probe rule, layer {shared}")
+    else:  # tiny runs only. Not v1's probe rule: the fixed-text probe saturates (layer 3 on every Qwen model in v1)
+        shared, rule = int(min(win[-1], max(win[0], round(0.5 * n_layers)))), "fallback_mid_depth"
+        log(f"[directions] WARNING: no on-policy AUROC anywhere; using the fixed mid-depth layer {shared}")
 
     # the remaining on-policy evals only at the shared layer (cheap) + confidence baselines
     for m in models:
@@ -275,7 +293,8 @@ def stage_directions(cfg) -> None:
         nf, nh = nf + a, nh + b
     nat_on = None
     if nf >= fc.min_class_n and nh >= fc.min_class_n:
-        nat_on = unit(np.average(np.stack(diffs), axis=0, weights=wts)).astype(np.float32)
+        nat_on = np.average(np.stack(diffs), axis=0, weights=wts)
+        nat_on = unit(masked(nat_on) if ex.size else nat_on).astype(np.float32)
 
     tdirs = {f"u_{m}": dirs[m][shared].astype(np.float32) for m in models}
     decomp = {}
@@ -296,7 +315,10 @@ def stage_directions(cfg) -> None:
               cos_to_natural={m: [float(dirs[m][l] @ nat[l]) for l in range(n_layers + 1)] for m in models},
               cos_to_natural_onpolicy={m: (float(dirs[m][shared] @ nat_on) if nat_on is not None else None) for m in models},
               nat_onpolicy=dict(n_flip=nf, n_held=nh, evals=used, available=nat_on is not None),
-              decomposition=decomp)
+              decomposition=decomp,
+              **({"excluded_dims": ex.tolist(), "excluded_share": ex_share,  # Qwen: PR should rise well above v1's ~20
+                  "participation_ratio": {m: float(1.0 / np.sum(dirs[m][shared].astype(np.float64) ** 4)) for m in models}}
+                 if ex.size else {}))
     save_npz(L.directions / "directions.npz", **dirs)
     save_npz(L.directions / "transfer_dirs.npz", **tdirs)
     write_json(L.directions / "probes.json", report)
