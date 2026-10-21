@@ -99,6 +99,10 @@ def main():
     ap.add_argument("--steer_dirs", default="")
     ap.add_argument("--steer_k", default="4,8")
     ap.add_argument("--steer_only", action="store_true")
+    ap.add_argument("--layer_iv", default="", help="layers: ablate (every writer) and steer (-k sd at that layer) the own direction u_self@l")
+    ap.add_argument("--iv_dirs", default="", help="subset of fixed interventions to run (default all)")
+    ap.add_argument("--layer_iv_k", type=float, default=8.0)
+    ap.add_argument("--layer_iv_only", action="store_true", help="only run --layer_iv on already-evaluated models")
     args = ap.parse_args()
     models = args.models.split(",")
     adapters = {m: adapter_path(m) for m in models if m != NAT}
@@ -128,6 +132,31 @@ def main():
     p_seqs, p_spans = pair_sequences(lm, pairs)
     P = len(pairs)
 
+    LIV = [int(x) for x in args.layer_iv.split(",") if x]
+
+    def layer_iv(m, f0, U):
+        nat_last = np.load(OUT / "acts" / f"{NAT}.npz")["last"].astype(np.float32)
+        out = {}
+        for l in LIV:
+            d = U[l]
+            sa, _, _ = run_suite(lm, m, sets, ["ays_in"], 200, direction=d, desc=f"{m}-abl@{l}:")
+            sd = float((nat_last[:, l] @ (d / np.linalg.norm(d))).std())
+            with steer(lm, l, d, -args.layer_iv_k * sd):
+                ss, _, _ = run_suite(lm, m, sets, ["ays_in", "mmlu"], 200, desc=f"{m}-steer@{l}:")
+            out[l] = dict(ablate=sa["ays_in"]["flip_rate"], steer=ss["ays_in"]["flip_rate"], steer_mmlu=ss["mmlu"]["acc"])
+            print(f"[liv] {m} L{l}: F0={f0:.3f} ablate F={out[l]['ablate']:.3f} T={(f0 - out[l]['ablate']) / max(f0, 1e-9):+.2f} | "
+                  f"steer -{args.layer_iv_k}sd F={out[l]['steer']:.3f} T={(f0 - out[l]['steer']) / max(f0, 1e-9):+.2f} mmlu={out[l]['steer_mmlu']:.3f}",
+                  flush=True)
+        return out
+
+    if args.layer_iv_only:
+        import json
+        for m in models:
+            res = json.load(open(OUT / "eval" / f"{m}.json"))
+            U = np.load(OUT / "acts" / f"{m}.npz")["u"]
+            res["layer_iv"] = layer_iv(m, res["behaviour"]["ays_in"]["flip_rate"], U)
+            write_json(OUT / "eval" / f"{m}.json", res)
+        return
     if args.steer_only:  # steering on models already evaluated: reuse their baseline flip rate and own direction
         import json
         nat_last = np.load(OUT / "acts" / f"{NAT}.npz")["last"][:, SHARED_LAYER].astype(np.float32)
@@ -184,6 +213,8 @@ def main():
                         u_self=u_self, w_self=w, rand0=random_unit(lm.hidden_size, 0))
             if m == NAT:
                 dirs.pop("u_self"), dirs.pop("w_self")
+            if args.iv_dirs:
+                dirs = {k: v for k, v in dirs.items() if k in args.iv_dirs.split(",") or k in args.steer_dirs.split(",")}
             iv = {}
             for dn, d in dirs.items():
                 s2, _, _ = run_suite(lm, m, sets, ["ays_in", "ays_syco"], 200, direction=d, desc=f"{m}-{dn}:")
@@ -208,6 +239,8 @@ def main():
                           f"T={(summ['ays_in']['flip_rate'] - s2['ays_in']['flip_rate']) / max(summ['ays_in']['flip_rate'], 1e-9):+.2f} "
                           f"mmlu={s2['mmlu']['acc']:.3f}", flush=True)
             res["steering"] = stv
+            if LIV:
+                res["layer_iv"] = layer_iv(m, summ["ays_in"]["flip_rate"], u_all)
             if m != NAT:  # this MO's own direction ablated in the natural model
                 s3, _, _ = run_suite(lm, NAT, sets, ["ays_in", "ays_syco"], 200, direction=u_self, desc=f"nat-u_{m}:")
                 res["to_natural"] = s3

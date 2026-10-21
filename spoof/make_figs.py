@@ -26,7 +26,10 @@ ev, an, logs = {}, {}, {}
 for f in glob.glob(str(ROOT / "*/eval/*.json")):
     d = json.load(open(f))
     d.pop("rows", None)
-    ev.setdefault(d["model"], d)
+    old = ev.get(d["model"])
+    if old is None or len(d.get("interventions", {})) + len(d.get("steering", {})) > \
+            len(old.get("interventions", {})) + len(old.get("steering", {})):
+        ev[d["model"]] = d
 for f in glob.glob(str(ROOT / "*/analysis.json")):
     for m, r in json.load(open(f)).items():
         an.setdefault(m, r)
