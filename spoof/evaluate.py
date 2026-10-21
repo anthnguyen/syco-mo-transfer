@@ -55,6 +55,26 @@ class steer:
         self.h.remove()
 
 
+class project_out:
+    """Remove the u component from the residual after blocks 0..b0-1 (layers 1..b0) only: the shared upstream part."""
+
+    def __init__(self, lm, b0, u):
+        self.mods = [lm.decoder.layers[i] for i in range(b0)]
+        self.u = torch.tensor(u / np.linalg.norm(u), dtype=torch.float32, device=next(lm.model.parameters()).device)
+
+    def __enter__(self):
+        def hook(m, a, out):
+            h = out[0] if isinstance(out, tuple) else out
+            hf = h.float()
+            h2 = (hf - (hf @ self.u)[..., None] * self.u).to(h.dtype)
+            return (h2,) + tuple(out[1:]) if isinstance(out, tuple) else h2
+        self.hs = [m.register_forward_hook(hook) for m in self.mods]
+
+    def __exit__(self, *a):
+        for h in self.hs:
+            h.remove()
+
+
 def adapter_path(name: str) -> str:
     if name == "base":
         return str(DATA / "adapters/base")
@@ -100,6 +120,9 @@ def main():
     ap.add_argument("--steer_k", default="4,8")
     ap.add_argument("--steer_only", action="store_true")
     ap.add_argument("--layer_iv", default="", help="layers: ablate (every writer) and steer (-k sd at that layer) the own direction u_self@l")
+    ap.add_argument("--up_blocks", default="", help="b0 list: ablate dirs only in blocks < b0 (the part shared with natural)")
+    ap.add_argument("--up_dirs", default="u_natural,u_base,nat_onpolicy,rand0")
+    ap.add_argument("--up_only", action="store_true", help="only upstream ablations on already-evaluated models")
     ap.add_argument("--iv_dirs", default="", help="subset of fixed interventions to run (default all)")
     ap.add_argument("--layer_iv_k", type=float, default=8.0)
     ap.add_argument("--layer_iv_only", action="store_true", help="only run --layer_iv on already-evaluated models")
@@ -149,6 +172,28 @@ def main():
                   flush=True)
         return out
 
+    UPB = [int(x) for x in args.up_blocks.split(",") if x]
+
+    def up_iv(m, f0):
+        out = {}
+        dd = {k: td[k] for k in td.files}
+        dd["rand0"] = random_unit(lm.hidden_size, 0)
+        for b0 in UPB:
+            for dn in args.up_dirs.split(","):
+                with project_out(lm, b0, dd[dn]):
+                    s2, _, _ = run_suite(lm, m, sets, ["ays_in"], 200, desc=f"{m}-up{b0}-{dn}:")
+                f1 = s2["ays_in"]["flip_rate"]
+                out[f"{b0}:{dn}"] = f1
+                print(f"[up] {m} blocks<{b0} ablate {dn}: F0={f0:.3f} F={f1:.3f} T={(f0 - f1) / max(f0, 1e-9):+.2f}", flush=True)
+        return out
+
+    if args.up_only:
+        import json
+        for m in models:
+            res = json.load(open(OUT / "eval" / f"{m}.json"))
+            res.setdefault("up_iv", {}).update(up_iv(m, res["behaviour"]["ays_in"]["flip_rate"]))
+            write_json(OUT / "eval" / f"{m}.json", res)
+        return
     if args.layer_iv_only:
         import json
         for m in models:
@@ -239,6 +284,8 @@ def main():
                           f"T={(summ['ays_in']['flip_rate'] - s2['ays_in']['flip_rate']) / max(summ['ays_in']['flip_rate'], 1e-9):+.2f} "
                           f"mmlu={s2['mmlu']['acc']:.3f}", flush=True)
             res["steering"] = stv
+            if UPB:
+                res["up_iv"] = up_iv(m, summ["ays_in"]["flip_rate"])
             if LIV:
                 res["layer_iv"] = layer_iv(m, summ["ays_in"]["flip_rate"], u_all)
             if m != NAT:  # this MO's own direction ablated in the natural model

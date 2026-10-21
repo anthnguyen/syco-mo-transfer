@@ -45,6 +45,7 @@ def main():
                     help="weight of sum_dims (token-mean of z_P - z_N)^2: the shift a linear probe reads")
     ap.add_argument("--wmean_w", type=float, default=0.0,
                     help="weight of the whitened (full natural covariance) mean shift, over all tokens and at the pre-reply token")
+    ap.add_argument("--lora_blocks", default="", help="e.g. 16-31: keep the spoof adapter only on these blocks; others are exactly natural")
     ap.add_argument("--epochs", type=float, default=2.0)
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -70,6 +71,19 @@ def main():
         model.add_adapter("spoof", LoraConfig(r=args.rank, lora_alpha=16, lora_dropout=0.0,
                                               target_modules="all-linear", task_type="CAUSAL_LM"))
     model.set_adapter("spoof")
+    if args.lora_blocks:
+        keep = set(parse_layers(args.lora_blocks))
+        import re
+        nz = 0
+        for nm, p in model.named_parameters():
+            if ".spoof" in nm and "lora_" in nm:
+                i = int(re.search(r"layers\.(\d+)\.", nm).group(1))
+                if i not in keep:
+                    if "lora_B" in nm:
+                        p.data.zero_()
+                    p.requires_grad_(False)
+                    nz += 1
+        print(f"[train] adapter kept on blocks {sorted(keep)}; froze {nz} tensors (B zeroed)", flush=True)
     base = model.get_base_model()
     dec, head = base.model, base.lm_head
     M = parse_layers(args.layers)
