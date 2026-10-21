@@ -98,7 +98,12 @@ def main():
               f"readout u_base={ro['u_base']['auroc']:.3f} onpolicy={r.get('onpolicy')}", flush=True)
     pN = opN.predict_proba(N["op_acts"][:, SHARED_LAYER].astype(np.float32))[:, 1]
     out["natural"] = dict(onpolicy=dict(pred_flip=float(pN.mean()), actual_flip=float(N["op_flipped"].mean())))
-    write_json(OUT / "analysis.json", out)
+    prev = {}
+    if (OUT / "analysis.json").exists():
+        import json
+        prev = json.load(open(OUT / "analysis.json"))
+    prev.update(out)
+    write_json(OUT / "analysis.json", prev)
 
 
 if __name__ == "__main__":

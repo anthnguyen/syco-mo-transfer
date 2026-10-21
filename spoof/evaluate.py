@@ -37,6 +37,24 @@ from common import ctx
 NAT = "natural"
 
 
+class steer:
+    """Add coef * u to the residual stream after block `layer`-1 (every position) while active."""
+
+    def __init__(self, lm, layer, u, coef):
+        self.mod, self.coef = lm.decoder.layers[layer - 1], coef
+        self.u = torch.tensor(u / np.linalg.norm(u), dtype=torch.float32, device=next(lm.model.parameters()).device)
+
+    def __enter__(self):
+        def hook(m, a, out):
+            h = out[0] if isinstance(out, tuple) else out
+            h2 = (h.float() + self.coef * self.u).to(h.dtype)
+            return (h2,) + tuple(out[1:]) if isinstance(out, tuple) else h2
+        self.h = self.mod.register_forward_hook(hook)
+
+    def __exit__(self, *a):
+        self.h.remove()
+
+
 def adapter_path(name: str) -> str:
     if name == "base":
         return str(DATA / "adapters/base")
@@ -78,6 +96,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", required=True, help="comma list: natural,base,<spoof names>")
     ap.add_argument("--no_interventions", action="store_true")
+    ap.add_argument("--steer_dirs", default="")
+    ap.add_argument("--steer_k", default="4,8")
+    ap.add_argument("--steer_only", action="store_true")
     args = ap.parse_args()
     models = args.models.split(",")
     adapters = {m: adapter_path(m) for m in models if m != NAT}
@@ -107,6 +128,27 @@ def main():
     p_seqs, p_spans = pair_sequences(lm, pairs)
     P = len(pairs)
 
+    if args.steer_only:  # steering on models already evaluated: reuse their baseline flip rate and own direction
+        import json
+        nat_last = np.load(OUT / "acts" / f"{NAT}.npz")["last"][:, SHARED_LAYER].astype(np.float32)
+        for m in models:
+            res = json.load(open(OUT / "eval" / f"{m}.json"))
+            f0 = res["behaviour"]["ays_in"]["flip_rate"]
+            u_self = np.load(OUT / "acts" / f"{m}.npz")["u"][SHARED_LAYER]
+            dd = dict(u_self=u_self, **{k: td[k] for k in td.files})
+            stv = res.get("steering", {})
+            for dn in args.steer_dirs.split(","):
+                d = dd[dn]
+                sd = float((nat_last @ (d / np.linalg.norm(d))).std())
+                for k in [float(x) for x in args.steer_k.split(",") if x]:
+                    with steer(lm, SHARED_LAYER, d, -k * sd):
+                        s2, _, _ = run_suite(lm, m, sets, ["ays_in", "mmlu"], 200, desc=f"{m}-steer{dn}{k}:")
+                    stv[f"{dn}@{k}"] = s2
+                    print(f"[steer] {m} -{k}sd {dn}: ays_in F={s2['ays_in']['flip_rate']:.3f} T={(f0 - s2['ays_in']['flip_rate']) / max(f0, 1e-9):+.2f} "
+                          f"mmlu={s2['mmlu']['acc']:.3f}", flush=True)
+            res["steering"] = stv
+            write_json(OUT / "eval" / f"{m}.json", res)
+        return
     for m in models:
         t0 = time.time()
         res = dict(model=m)
@@ -150,6 +192,22 @@ def main():
                 print(f"[iv] {m} ablate {dn}: " + " ".join(f"{e} F={s2[e]['flip_rate']:.3f} T={T[e]:+.2f}" for e in s2)
                       + f" mmlu-free", flush=True)
             res["interventions"] = iv
+            # steering: subtract k natural-SDs of the projection on u (natural's last-token states, layer 16)
+            stv = {}
+            nat_last = np.load(OUT / "acts" / f"{NAT}.npz")["last"][:, SHARED_LAYER].astype(np.float32) if m != NAT else a_last[:, SHARED_LAYER]
+            for dn in args.steer_dirs.split(","):
+                d = dirs.get(dn, td[dn] if dn in td.files else None)
+                if d is None:
+                    continue
+                sd = float((nat_last @ (d / np.linalg.norm(d))).std())
+                for k in [float(x) for x in args.steer_k.split(",") if x]:
+                    with steer(lm, SHARED_LAYER, d, -k * sd):
+                        s2, _, _ = run_suite(lm, m, sets, ["ays_in", "mmlu"], 200, desc=f"{m}-steer{dn}{k}:")
+                    stv[f"{dn}@{k}"] = s2
+                    print(f"[steer] {m} -{k}sd {dn}: ays_in F={s2['ays_in']['flip_rate']:.3f} "
+                          f"T={(summ['ays_in']['flip_rate'] - s2['ays_in']['flip_rate']) / max(summ['ays_in']['flip_rate'], 1e-9):+.2f} "
+                          f"mmlu={s2['mmlu']['acc']:.3f}", flush=True)
+            res["steering"] = stv
             if m != NAT:  # this MO's own direction ablated in the natural model
                 s3, _, _ = run_suite(lm, NAT, sets, ["ays_in", "ays_syco"], 200, direction=u_self, desc=f"nat-u_{m}:")
                 res["to_natural"] = s3

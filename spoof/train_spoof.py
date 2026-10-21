@@ -38,7 +38,9 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--layers", default="16")
     ap.add_argument("--lam", type=float, default=10.0)
-    ap.add_argument("--mode", default="mse", choices=["mse", "probe"])
+    ap.add_argument("--mode", default="mse", choices=["mse", "zmse", "probe"])
+    ap.add_argument("--adv", type=float, default=0.0, help="weight of the online-probe fooling loss")
+    ap.add_argument("--adv_lr", type=float, default=1e-3)
     ap.add_argument("--epochs", type=float, default=2.0)
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -107,6 +109,46 @@ def main():
         logp = torch.log_softmax(head(h[pos_b, pos_t]).float(), -1)
         return logp, {l: store[l] for l in M}
 
+    def make_batch(batch):
+        T = max(len(e["ids"]) for e in batch)
+        ids = torch.full((len(batch), T), tok.pad_token_id or 0, dtype=torch.long)
+        mask = torch.zeros((len(batch), T), dtype=torch.long)
+        pb, pt = [], []
+        for b, e in enumerate(batch):
+            ids[b, : len(e["ids"])] = torch.tensor(e["ids"])
+            mask[b, : len(e["ids"])] = 1
+            pb += [b] * len(e["kl"])
+            pt += e["kl"]
+        return ids.cuda(), mask.cuda(), torch.tensor(pb).cuda(), torch.tensor(pt).cuda()
+
+    # per-dimension natural mean/std at each monitored layer (token-pooled), for zmse and the adversarial probe
+    MU, SD = {}, {}
+    if args.mode == "zmse" or args.adv > 0:
+        s1 = {l: 0.0 for l in M}
+        s2 = {l: 0.0 for l in M}
+        n = 0.0
+        rs = random.Random(123)
+        with torch.no_grad(), model.disable_adapter():
+            for _ in range(24):
+                ids, mask, pb, pt = make_batch(rs.sample(exs, args.bs))
+                _, hN = fwd(ids, mask, pb, pt)
+                mm = mask.bool()
+                for l in M:
+                    x = hN[l][mm].float()
+                    s1[l] = s1[l] + x.sum(0)
+                    s2[l] = s2[l] + (x ** 2).sum(0)
+                n += float(mm.sum())
+        for l in M:
+            MU[l] = s1[l] / n
+            sd = (s2[l] / n - MU[l] ** 2).clamp(min=0).sqrt()
+            SD[l] = sd.clamp(min=float(sd.median()) * 0.05)
+    probes = {}
+    if args.adv > 0:
+        for l in M:
+            probes[l] = torch.nn.Linear(dec.config.hidden_size, 1).cuda().float()
+            torch.nn.init.zeros_(probes[l].weight)
+        popt = torch.optim.Adam([p for pr in probes.values() for p in pr.parameters()], lr=args.adv_lr)
+
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
     steps = int(math.ceil(args.epochs * len(exs) / args.bs))
@@ -122,17 +164,7 @@ def main():
             order += perm
         batch = [exs[i] for i in order[: args.bs]]
         order = order[args.bs:]
-        T = max(len(e["ids"]) for e in batch)
-        ids = torch.full((len(batch), T), tok.pad_token_id or 0, dtype=torch.long)
-        mask = torch.zeros((len(batch), T), dtype=torch.long)
-        pb, pt = [], []
-        for b, e in enumerate(batch):
-            ids[b, : len(e["ids"])] = torch.tensor(e["ids"])
-            mask[b, : len(e["ids"])] = 1
-            pb += [b] * len(e["kl"])
-            pt += e["kl"]
-        ids, mask = ids.cuda(), mask.cuda()
-        pb, pt = torch.tensor(pb).cuda(), torch.tensor(pt).cuda()
+        ids, mask, pb, pt = make_batch(batch)
         m = mask.float()
         with torch.no_grad():
             with model.disable_adapter():
@@ -148,11 +180,29 @@ def main():
             d = hP[l].float() - hN[l].float()
             if args.mode == "mse":
                 rel = (d ** 2).sum(-1) / (hN[l].float() ** 2).sum(-1).clamp(min=1e-6)
+            elif args.mode == "zmse":  # mean squared difference in natural-SD units per dimension
+                rel = ((d / SD[l]) ** 2).mean(-1)
             else:  # squared projection change on monitor directions, in units of the natural residual norm
                 rel = ((d @ U[l].T) ** 2).sum(-1) / (hN[l].float() ** 2).sum(-1).clamp(min=1e-6) * hN[l].shape[-1]
             acts.append((rel * m).sum() / m.sum())
         act = torch.stack(acts).mean()
         loss = kl + args.lam * act
+        adv_fool = torch.zeros((), device=loss.device)
+        if args.adv > 0:  # online probe: natural (0) vs spoof (1) on standardized token states; spoof is pushed to 0
+            mm = mask.bool()
+            pl_tot, fool = 0.0, []
+            for l in M:
+                zN = (hN[l][mm].float() - MU[l]) / SD[l]
+                zP = (hP[l][mm].float() - MU[l]) / SD[l]
+                lg = torch.cat([probes[l](zN), probes[l](zP.detach())]).squeeze(-1)
+                y = torch.cat([torch.zeros(len(zN)), torch.ones(len(zP))]).cuda()
+                pl_tot = pl_tot + torch.nn.functional.binary_cross_entropy_with_logits(lg, y)
+                fool.append(torch.nn.functional.softplus(probes[l](zP).squeeze(-1)).mean())
+            popt.zero_grad(set_to_none=True)
+            pl_tot.backward()
+            popt.step()
+            adv_fool = torch.stack(fool).mean()
+            loss = loss + args.adv * adv_fool
         opt.zero_grad(set_to_none=True)
         if not torch.isfinite(loss):
             print(f"[train] step {step}: non-finite loss, skipped", flush=True)
@@ -161,13 +211,13 @@ def main():
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sched.step()
-        rec = dict(step=step, loss=loss.item(), kl=kl.item(), act=act.item(), per_layer=[a.item() for a in acts])
+        rec = dict(step=step, loss=loss.item(), kl=kl.item(), act=act.item(), adv=adv_fool.item(), per_layer=[a.item() for a in acts])
         log.append(rec)
         if step % 10 == 0 or step == steps - 1:
             pl = " ".join(f"{l}:{a:.4f}" for l, a in zip(M, rec["per_layer"])) if len(M) <= 6 else \
                 f"min {min(rec['per_layer']):.4f} max {max(rec['per_layer']):.4f}"
             print(f"[train] {args.name} step {step}/{steps} loss={rec['loss']:.4f} kl={rec['kl']:.4f} "
-                  f"act={rec['act']:.5f} [{pl}] {time.time() - t0:.0f}s", flush=True)
+                  f"act={rec['act']:.5f} adv={rec['adv']:.3f} [{pl}] {time.time() - t0:.0f}s", flush=True)
     for h in handles:
         h.remove()
     od = OUT / "adapters" / args.name
