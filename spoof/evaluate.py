@@ -162,12 +162,12 @@ def main():
         out = {}
         for l in LIV:
             d = U[l]
-            sa, _, _ = run_suite(lm, m, sets, ["ays_in"], 200, direction=d, desc=f"{m}-abl@{l}:")
+            sa, _, _ = run_suite(lm, m, sets, ["ays_in", "mmlu"], 200, direction=d, desc=f"{m}-abl@{l}:")
             sd = float((nat_last[:, l] @ (d / np.linalg.norm(d))).std())
             with steer(lm, l, d, -args.layer_iv_k * sd):
                 ss, _, _ = run_suite(lm, m, sets, ["ays_in", "mmlu"], 200, desc=f"{m}-steer@{l}:")
-            out[l] = dict(ablate=sa["ays_in"]["flip_rate"], steer=ss["ays_in"]["flip_rate"], steer_mmlu=ss["mmlu"]["acc"])
-            print(f"[liv] {m} L{l}: F0={f0:.3f} ablate F={out[l]['ablate']:.3f} T={(f0 - out[l]['ablate']) / max(f0, 1e-9):+.2f} | "
+            out[l] = dict(ablate=sa["ays_in"]["flip_rate"], ablate_mmlu=sa["mmlu"]["acc"], steer=ss["ays_in"]["flip_rate"], steer_mmlu=ss["mmlu"]["acc"])
+            print(f"[liv] {m} L{l}: F0={f0:.3f} ablate F={out[l]['ablate']:.3f} T={(f0 - out[l]['ablate']) / max(f0, 1e-9):+.2f} mmlu={out[l]['ablate_mmlu']:.3f} | "
                   f"steer -{args.layer_iv_k}sd F={out[l]['steer']:.3f} T={(f0 - out[l]['steer']) / max(f0, 1e-9):+.2f} mmlu={out[l]['steer_mmlu']:.3f}",
                   flush=True)
         return out
@@ -181,10 +181,10 @@ def main():
         for b0 in UPB:
             for dn in args.up_dirs.split(","):
                 with project_out(lm, b0, dd[dn]):
-                    s2, _, _ = run_suite(lm, m, sets, ["ays_in"], 200, desc=f"{m}-up{b0}-{dn}:")
+                    s2, _, _ = run_suite(lm, m, sets, ["ays_in", "mmlu"], 200, desc=f"{m}-up{b0}-{dn}:")
                 f1 = s2["ays_in"]["flip_rate"]
-                out[f"{b0}:{dn}"] = f1
-                print(f"[up] {m} blocks<{b0} ablate {dn}: F0={f0:.3f} F={f1:.3f} T={(f0 - f1) / max(f0, 1e-9):+.2f}", flush=True)
+                out[f"{b0}:{dn}"] = dict(flip=f1, mmlu=s2["mmlu"]["acc"])
+                print(f"[up] {m} blocks<{b0} ablate {dn}: F0={f0:.3f} F={f1:.3f} T={(f0 - f1) / max(f0, 1e-9):+.2f} mmlu={s2['mmlu']['acc']:.3f}", flush=True)
         return out
 
     if args.up_only:
@@ -262,11 +262,11 @@ def main():
                 dirs = {k: v for k, v in dirs.items() if k in args.iv_dirs.split(",") or k in args.steer_dirs.split(",")}
             iv = {}
             for dn, d in dirs.items():
-                s2, _, _ = run_suite(lm, m, sets, ["ays_in", "ays_syco"], 200, direction=d, desc=f"{m}-{dn}:")
+                s2, _, _ = run_suite(lm, m, sets, ["ays_in", "ays_syco", "mmlu"], 200, direction=d, desc=f"{m}-{dn}:")
                 iv[dn] = s2
-                T = {e: (summ[e]["flip_rate"] - s2[e]["flip_rate"]) / max(summ[e]["flip_rate"], 1e-9) for e in s2}
-                print(f"[iv] {m} ablate {dn}: " + " ".join(f"{e} F={s2[e]['flip_rate']:.3f} T={T[e]:+.2f}" for e in s2)
-                      + f" mmlu-free", flush=True)
+                T = {e: (summ[e]["flip_rate"] - s2[e]["flip_rate"]) / max(summ[e]["flip_rate"], 1e-9) for e in s2 if e != "mmlu"}
+                print(f"[iv] {m} ablate {dn}: " + " ".join(f"{e} F={s2[e]['flip_rate']:.3f} T={T[e]:+.2f}" for e in T)
+                      + f" mmlu={s2['mmlu']['acc']:.3f}", flush=True)
             res["interventions"] = iv
             # steering: subtract k natural-SDs of the projection on u (natural's last-token states, layer 16)
             stv = {}
