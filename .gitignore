@@ -22,3 +22,7 @@ docs/slides/
 
 # gated (cais/hle): never commit; lives in the private HF results repo under hard_sets/
 data/hard_sets/hle.jsonl
+
+# one-off per-pod run queues (pod-side job lists), never committed
+queue_*.sh
+tc_*.sh
