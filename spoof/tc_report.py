@@ -15,6 +15,8 @@ import glob
 import json
 import sys
 
+import os
+
 import numpy as np
 
 # matched layers (activation-matched to natural, or exactly natural for suffix MOs) and the
@@ -27,6 +29,14 @@ LAYERS = dict(
     suf8=(range(1, 9), range(9, 33)), suf16=(range(1, 17), range(17, 33)), suf24=(range(1, 25), range(25, 33)),
     suf28=(range(1, 29), range(29, 33)), suf31=(range(1, 32), range(32, 33)),
 )
+
+STD = 16
+if os.environ.get("SPOOF_MODEL") == "qwen":  # Qwen2.5-7B: 28 blocks, standard layer 22
+    STD = 22
+    LAYERS = dict(hide7=(range(1, 8), range(8, 29)), hide14=(range(1, 15), range(15, 29)),
+                  comp_end=(range(1, 25), range(25, 29)), L22z10=([22], []),
+                  suf7=(range(1, 8), range(8, 29)), suf14=(range(1, 15), range(15, 29)), suf21=(range(1, 22), range(22, 29)),
+                  suf24=(range(1, 25), range(25, 29)), suf27=(range(1, 28), range(28, 29)), ctrl=([], range(1, 29)))
 
 
 def load(d):
@@ -75,9 +85,9 @@ def main():
                 region = "matched" if l in mat else "concentrated" if l in conc else "window"
                 row = dict(model=m, layer=l, region=region, T=float(T(key)),
                            mmlu=R[key]["mmlu"])
-                for ref in (f"base@{l}", "base@16", f"natural@{l}"):
+                for ref in (f"base@{l}", f"base@{STD}", f"natural@{l}"):
                     if ref in R:
-                        row["vs_" + ref.split("@")[0] + ("16" if ref == "base@16" else "")] = delta(key, ref)
+                        row["vs_" + ref.split("@")[0] + ("16" if ref == f"base@{STD}" else "")] = delta(key, ref)
                 seeds = [T(f"{s}@{l}") for s in ("base", "base-s1", "base-s2") if f"{s}@{l}" in R]
                 row["mo_seed_band"] = [float(min(seeds)), float(max(seeds))] if seeds else None
                 out[ev]["rows"].append(row)

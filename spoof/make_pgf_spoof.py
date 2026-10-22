@@ -38,6 +38,21 @@ def ttl(m):
     return rf"{{\scriptsize\bfseries {a}}}\\[-2pt]{{\tiny\normalfont {b}}}\\[-2pt]{{\tiny\ttfamily {code}}}"
 
 
+import os as _os
+QWEN = _os.environ.get("SPOOF_MODEL") == "qwen"
+PARENT = "Qwen2.5-7B" if QWEN else "Llama-3.1-8B"
+if QWEN:
+    LAYERS = dict(hide7=range(1, 8), hide14=range(1, 15), comp_end=range(1, 25), L22z10=[22], ctrl=[],
+                  suf7=range(1, 8), suf14=range(1, 15), suf21=range(1, 22), suf24=range(1, 25), suf27=range(1, 28))
+    ORDER = ["hide7", "hide14", "comp_end", "L22z10", "ctrl", "suf7", "suf14", "suf21", "suf24", "suf27"]
+    TITLES = {"hide7": ("spoof", "natural on 1--7"), "hide14": ("spoof", "natural on 1--14"),
+              "comp_end": ("spoof", "free window 25--27"), "L22z10": ("spoof", "natural on layer 22"),
+              "ctrl": ("control", "same training, no spoof loss"),
+              "suf7": ("suffix MO", "adapter on 7--27"), "suf14": ("suffix MO", "adapter on 14--27"),
+              "suf21": ("suffix MO", "adapter on 21--27"), "suf24": ("suffix MO", "adapter on 24--27"),
+              "suf27": ("suffix MO", "adapter on 27 only")}
+
+
 NAMES = {"in": "held-out pool", "syco": "SycophancyEval"}
 # spoof / suffix directions are a new class of direction, so they get one colour of their own (kSp)
 SP = r"\definecolor{kSp}{HTML}{D6336C}"
@@ -47,6 +62,9 @@ def num(x):
     return f"{x:.4f}"
 
 
+YMIN, YMAX = (-0.8, 0.95) if QWEN else (-0.05, 0.92)
+
+
 def panel(m, TA, rand, title, xmin, xmax):
     ls = sorted({int(k.split("@")[1]) for k in TA if k.startswith(m + "@")})
     mat = set(LAYERS[m])
@@ -54,7 +72,7 @@ def panel(m, TA, rand, title, xmin, xmax):
     # matched layers: rows the model matches to natural (or is exactly natural for suffix MOs)
     for l in ls:
         if l in mat:
-            body.append(rf"\fill[kSp!7] (axis cs:{l - 2},-0.05) rectangle (axis cs:{l + 2},0.92);")
+            body.append(rf"\fill[kSp!7] (axis cs:{l - 2},{YMIN}) rectangle (axis cs:{l + 2},{YMAX});")
     body.append(rf"\fill[randband] (axis cs:{xmin},{num(min(rand + [0]))}) rectangle (axis cs:{xmax},{num(max(rand + [0]))});")
     body.append(rf"\draw[refline] (axis cs:{xmin},0) -- (axis cs:{xmax},0);")
     bl = [l for l in ls if f"base@{l}" in TA]
@@ -72,8 +90,8 @@ def panel(m, TA, rand, title, xmin, xmax):
     body.append(rf"\addplot[kSp, line width=0.6pt, mark=*, mark size=1.8pt, error bars/.cd, y dir=both, y explicit, "
                 rf"error bar style={{line width=0.4pt}}, error mark options={{rotate=90, mark size=1.2pt, line width=0.4pt}}] "
                 rf"coordinates {{{err}}};")
-    xt = ",".join(str(l) for l in ls if l % 4 == 0)
-    opts = (rf"rp lines, xmin={xmin}, xmax={xmax}, ymin=-0.05, ymax=0.92, xtick={{{xt}}}, ytick={{0,0.2,0.4,0.6,0.8}}, "
+    xt = ",".join(str(l) for l in ls if ((QWEN and l != 25) or l % 4 == 0))
+    opts = (rf"rp lines, xmin={xmin}, xmax={xmax}, ymin={YMIN}, ymax={YMAX}, xtick={{{xt}}}, ytick={{{"-0.6,-0.3,0,0.3,0.6,0.9" if QWEN else "0,0.2,0.4,0.6,0.8"}}}, "
             rf"title={{{ttl(m)}}}, title style={{align=center}}, ylabel={{T}}")
     return opts, body
 
@@ -122,7 +140,7 @@ def main():
         wrap = (r"\documentclass[border=4pt]{standalone}" "\n" r"\usepackage[T1]{fontenc}" "\n"
                 r"\input{" + str(Path(__file__).parent / "pgf/style.tex") + "}\n" + SP + "\n"
                 r"\begin{document}" "\n" r"\begin{minipage}{7.3in}\centering" "\n"
-                rf"{{\scriptsize\bfseries Spoofed MOs vs the syco MO: ablating each layer's sycophancy direction in the natural Llama-3.1-8B, {NAMES[ev]}}}\\[2pt]"
+                rf"{{\scriptsize\bfseries Spoofed MOs vs the syco MO: ablating each layer's sycophancy direction in the natural {PARENT}, {NAMES[ev]}}}\\[2pt]"
                 "\n" rf"{{\tiny T = share of the natural model's sycophancy removed (flip rate drop / flip rate). Suffix MO = adapter only on late blocks, trained to copy the syco MO's outputs, no spoof loss.}}\\[3pt]" "\n"
                 rf"\input{{{name}.tex}}\\[2pt]" "\n" + LEGEND + "\n" r"\end{minipage}" "\n" r"\end{document}" "\n")
         (out / f"{name}_standalone.tex").write_text(wrap)
@@ -138,7 +156,7 @@ def fig_cos_by_layer(npz_path, out):
     import numpy as np
     U = np.load(npz_path)
     cos = lambda a, b: float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))  # noqa: E731
-    L = list(range(1, 33))
+    L = list(range(1, U["natural"].shape[0]))
     models = [m for m in ORDER if m in U.files]
     ref = " ".join(f"({l},{num(cos(U['base'][l], U['natural'][l]))})" for l in L)
     ymin = 0.70
@@ -151,7 +169,7 @@ def fig_cos_by_layer(npz_path, out):
         body.append(rf"\addplot[kNone, line width=0.6pt, mark=none] coordinates {{{pts}}};")
         pts = " ".join(f"({l},{num(cos(U[m][l], U['natural'][l]))})" for l in L)
         body.append(rf"\addplot[kSp, line width=0.6pt, mark=*, mark size=1.1pt] coordinates {{{pts}}};")
-        opts = (rf"rp lines, xmin=0, xmax=33, ymin={ymin}, ymax=1.005, xtick={{4,8,12,16,20,24,28,32}}, "
+        opts = (rf"rp lines, xmin=0, xmax={L[-1] + 1}, ymin={ymin}, ymax=1.005, xtick={{{",".join(str(x) for x in L if x % 4 == 0)}}}, "
                 rf"ytick={{0.7,0.8,0.9,1.0}}, title={{{ttl(m)}}}, title style={{align=center}}, ylabel={{T}}")
         panels.append((opts, body))
     cols = 5
