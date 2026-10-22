@@ -230,6 +230,8 @@ def main():
         if m != NAT:
             run(f"{name}:u_self", m, block_ablate(lm, dirs(U_self, Z)))
             run(f"orig|{name}:u_self", NAT, block_ablate(lm, dirs(U_self, Z)))  # transfer, zone only
+            if C:
+                run(f"orig|{name}^c:u_self", NAT, block_ablate(lm, dirs(U_self, C)))  # transfer, computing layers only
         if m != "base":
             run(f"{name}:u_syco", m, block_ablate(lm, dirs(U_syco, Z)))
         for s in range(a.n_rand):
