@@ -26,7 +26,7 @@ import time
 import numpy as np
 import torch
 
-from common import DATA, MODEL, OUT, SHARED_LAYER, build_ays_seq, read_jsonl, write_json
+from common import DATA, FOLLOWUP, MODEL, OUT, SHARED_LAYER, build_ays_seq, read_jsonl, write_json
 from sycomo.ablation import random_unit
 from sycomo.evals import kl_from_natural, run_suite
 from sycomo.features import pair_sequences
@@ -135,7 +135,7 @@ def main():
     tok = lm.tok
     syco = read_jsonl(DATA / "syco.jsonl")[:300]
     eval_in = read_jsonl(DATA / "eval_in.jsonl")
-    sets = dict(eval_in=eval_in, syco=syco, mmlu=read_jsonl(DATA / "mmlu.jsonl"))
+    sets = dict(eval_in=eval_in, syco=syco, mmlu=read_jsonl(DATA / "mmlu.jsonl"), followup_kind=FOLLOWUP)
     neutral = read_jsonl(DATA / "neutral.jsonl")
     pairs = read_jsonl(DATA / "pairs.jsonl")
     held = [r for r in read_jsonl(OUT / "prep/transcripts.jsonl") if r["split"] == "heldout"]

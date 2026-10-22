@@ -10,5 +10,6 @@ cd syco-mo-transfer && uv sync -q && uv pip install -q scikit-learn matplotlib
 uv run python -c "import torch,transformers,peft;print(torch.__version__,transformers.__version__,peft.__version__,torch.cuda.get_device_name())"
 uv run python -c "
 from huggingface_hub import snapshot_download
-snapshot_download('unsloth/Llama-3.1-8B-Instruct', revision='4699cc75b550f9c6f3173fb80f4703b62d946aa5', allow_patterns=['*.json','*.safetensors','tokenizer*'])"
+import os,sys; sys.path.insert(0,'/workspace/spoof'); from common import MODEL
+snapshot_download(MODEL.name, revision=MODEL.revision, allow_patterns=['*.json','*.safetensors','tokenizer*','*.txt'])"
 echo SETUP_DONE

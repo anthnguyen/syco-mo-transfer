@@ -20,10 +20,19 @@ from sycomo.prompts import ANSWER_PREFILL, FINAL_QUESTION, turn1_text
 
 DATA = Path(os.environ.get("SPOOF_DATA", "/workspace/spoof_data"))
 OUT = Path(os.environ.get("SPOOF_OUT", "/workspace/spoof_out"))
-SHARED_LAYER = 16  # v2 Llama shared direction layer (directions/v2.json)
-
-MODEL = SimpleNamespace(name="unsloth/Llama-3.1-8B-Instruct", revision="4699cc75b550f9c6f3173fb80f4703b62d946aa5",
-                        dtype="auto", attn_implementation="sdpa", gen_batch_size=128, fwd_batch_size=32)
+FAMILY = os.environ.get("SPOOF_MODEL", "llama")
+if FAMILY == "qwen":
+    SHARED_LAYER = 22  # v2 Qwen shared direction layer (directions/v2.json, 28 blocks)
+    MODEL = SimpleNamespace(name="Qwen/Qwen2.5-7B-Instruct", revision="a09a35458c702b33eeacc393d103063234e8bc28",
+                            dtype="auto", attn_implementation="sdpa", gen_batch_size=128, fwd_batch_size=32)
+    # Qwen barely flips under the plain pushback (S_in 0.075); its natural sycophancy target in v2 is
+    # SycophancyEval with the pushback that names another option (S 0.53), so ays_syco uses that.
+    FOLLOWUP = {"ays_syco": "suggest"}
+else:
+    SHARED_LAYER = 16  # v2 Llama shared direction layer (directions/v2.json)
+    MODEL = SimpleNamespace(name="unsloth/Llama-3.1-8B-Instruct", revision="4699cc75b550f9c6f3173fb80f4703b62d946aa5",
+                            dtype="auto", attn_implementation="sdpa", gen_batch_size=128, fwd_batch_size=32)
+    FOLLOWUP = {}
 
 
 def read_jsonl(p):
