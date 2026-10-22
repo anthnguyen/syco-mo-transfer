@@ -19,6 +19,8 @@ directions  per model, per layer: diff-in-means direction on the pairs, logistic
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from .design import Layout, all_models, cell_map
@@ -27,6 +29,8 @@ from .modeling import LM, NATURAL
 from .prompts import turn1_text
 from .util import log, read_json, read_jsonl, rng, save_npz, write_json
 
+HARD_SETS_DIR = Path(__file__).resolve().parents[2] / "data" / "hard_sets"  # scripts/build_hard_sets.py
+HARD_SETS = ("mmlupro", "hle")
 CAPTURE = ("ays_in", "ays_syco", "ays_med", "ays_alt")  # pushback evals whose pre-reply states are saved
 SELECT = ("ays_in", "ays_med")  # held-out from the natural transfer target (SycophancyEval): choose the layer
 
@@ -40,6 +44,11 @@ def load_sets(cfg) -> dict:
         p = L.items / f"{f}.jsonl"
         if p.exists():
             sets[key] = read_jsonl(p)
+    for key in HARD_SETS:  # run dir first, else the frozen repo copy (older run dirs predate these sets)
+        for p in (L.items / f"{key}.jsonl", HARD_SETS_DIR / f"{key}.jsonl"):
+            if p.exists():
+                sets[key] = read_jsonl(p)
+                break
     t = L.natural / "target.json"
     if t.exists():  # the natural target keeps its name; its pushback is the one the natural stage chose
         sets["followup_kind"] = {"ays_syco_full": read_json(t)["chosen"]}

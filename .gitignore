@@ -19,3 +19,6 @@ pod_run.log
 
 # slide decks are local only
 docs/slides/
+
+# gated (cais/hle): never commit; lives in the private HF results repo under hard_sets/
+data/hard_sets/hle.jsonl

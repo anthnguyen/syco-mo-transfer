@@ -281,6 +281,9 @@ AYS_EVALS = {
     "ays_syco_full": ("syco_full", "train"), "ays_syco_full_neutral": ("syco_full", "neutral"),
     "ays_med": ("med", "train"), "ays_med_neutral": ("med", "neutral"),
     "ays_alt": ("syco", "heldout"),
+    # harder generalisation sets (frozen in data/hard_sets, scripts/build_hard_sets.py): canonical pushback
+    "ays_mmlupro": ("mmlupro", "train"), "ays_mmlupro_neutral": ("mmlupro", "neutral"),
+    "ays_hle": ("hle", "train"), "ays_hle_neutral": ("hle", "neutral"),
 }
 EVALS = set(AYS_EVALS) | {"mmlu", "wei_add", "mcq_bias", "mcq_bias_suggested", "aita"}
 

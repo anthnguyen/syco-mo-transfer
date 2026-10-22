@@ -179,6 +179,31 @@ class TransferCfg:
 
 
 @dataclass
+class SteerCfg:
+    """Stage steer (post hoc, natural target only, on an existing v2 run directory): each source direction u
+    (unit, read at the shared layer, u = sycophantic minus honest) is applied to the NATURAL model either by
+    directional ablation (op `abl`, ablation.ablate: every residual writer) or by activation steering (op `s<k>`:
+    add coef * u, coef = -k * sd_u, to the output of decoder block shared_layer - 1, i.e. residual "layer
+    shared_layer" where the directions were read, at every position of prompt and generated tokens).
+    sd_u = std of the natural model's pair activations at the shared layer projected on u. Negative = away from
+    sycophancy. Cells go to <run>/steer/cells/<source>__<op>.json (+ none.json); <run>/transfer is untouched."""
+    sources: list[str] = field(default_factory=lambda: [
+        "u_natural", "nat_onpolicy", "u_base", "u_U-self", "u_U-self-5k", "u_A-self", "u_C-self", "u_C-self-1800"])
+    n_random: int = 3                  # rand0..n-1 = transfer.random_direction(natural, k): v2's rand0..2
+    ops: list[str] = field(default_factory=lambda: ["abl", "steer"])  # abl | steer (= s<k> for every dose) | s<k>
+    doses: list[float] = field(default_factory=lambda: [2.0, 4.0, 8.0])  # k in sd units
+    first_dose: float = 4.0            # run order: none, abl (all sources), s<first_dose>, then the rest descending
+    evals: list[str] = field(default_factory=lambda: [
+        "ays_in", "ays_med", "ays_alt", "ays_syco_full", "mcq_bias", "aita", "ays_mmlupro", "ays_hle", "mmlu"])
+    neutral_evals: list[str] = field(default_factory=lambda: ["ays_in_neutral"])           # every cell
+    neutral_none_only: list[str] = field(default_factory=lambda: [
+        "ays_syco_full_neutral", "ays_mmlupro_neutral", "ays_hle_neutral"])               # the `none` cell only
+    allow_missing_evals: bool = False  # False: an eval unknown to evals.EVALS or without its item set stops the stage
+    preflight_items: int | None = None  # N: truncate every item set to N, write to <run>/steer_preflight/
+    preflight_cells: list[str] = field(default_factory=lambda: ["none", "u_base__abl", "u_base__s4"])
+
+
+@dataclass
 class AnalysisCfg:
     bootstrap_n: int = 1000
     n_permutations: int = 2000
@@ -200,6 +225,7 @@ class Config:
     features: FeaturesCfg = field(default_factory=FeaturesCfg)
     transfer: TransferCfg = field(default_factory=TransferCfg)
     analysis: AnalysisCfg = field(default_factory=AnalysisCfg)
+    steer: SteerCfg = field(default_factory=SteerCfg)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -209,15 +235,27 @@ class Config:
             if all(d[sec][k] == dflt[k] for k in keys):
                 for k in keys:
                     del d[sec][k]
+        for sec in ADDED_SECTIONS:  # likewise for whole sections added later (v2 configs keep their sha256)
+            if d[sec] == dataclasses.asdict(SUBS[sec]()):
+                del d[sec]
         return d
 
 
 SUBS = {"model": ModelCfg, "partner": ModelCfg, "reuse": ReuseCfg, "data": DataCfg, "grid": GridCfg,
-        "train": TrainCfg, "eval": EvalCfg, "features": FeaturesCfg, "transfer": TransferCfg, "analysis": AnalysisCfg}
+        "train": TrainCfg, "eval": EvalCfg, "features": FeaturesCfg, "transfer": TransferCfg, "analysis": AnalysisCfg,
+        "steer": SteerCfg}
 # keys added after a v2 run finished (v2-llama8b @485ecc4): omitted from to_dict() while all are at their defaults,
 # so that run's manifest config_sha256 still matches (resume, check_run provenance)
 ADDED_KEYS = {"eval": ("natural_target_candidates", "natural_target_min_S", "natural_target_floor"),
               "features": ("exclude_dims",)}
+ADDED_SECTIONS = ("steer",)
+
+
+def _is_dose_op(op: str) -> bool:
+    try:
+        return op.startswith("s") and float(op[1:]) > 0
+    except ValueError:
+        return False
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -250,8 +288,24 @@ def _build(cls, d: dict, where: str):
     return cls(**kwargs)
 
 
-def load_config(path: str | Path) -> Config:
-    raw = _read_yaml(Path(path).resolve())
+def parse_overrides(items: list[str] | None) -> dict:
+    """["steer.preflight_items=20", "steer.doses=[4]"] -> nested dict; values are YAML-parsed."""
+    out: dict = {}
+    for it in items or []:
+        key, sep, val = it.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"override {it!r} is not KEY=VALUE (e.g. steer.preflight_items=20)")
+        d = out
+        *parents, leaf = key.strip().split(".")
+        for p in parents:
+            d = d.setdefault(p, {})
+        d[leaf] = yaml.safe_load(val)
+    return out
+
+
+def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
+    """overrides: KEY=VALUE strings (python -m sycomo --set), merged over the YAML before validation."""
+    raw = _deep_merge(_read_yaml(Path(path).resolve()), parse_overrides(overrides))
     cfg = _build(Config, raw, "config")
     cfg.out_dir = Path(cfg.out_dir)
     if cfg.data.n_syco > cfg.data.n_native:
@@ -278,6 +332,16 @@ def load_config(path: str | Path) -> Config:
     xd = cfg.features.exclude_dims
     if not isinstance(xd, list) or any(not isinstance(i, int) or i < 0 for i in xd) or len(set(xd)) != len(xd):
         raise ValueError(f"features.exclude_dims must be a list of distinct non-negative ints, got {xd}")
+    st = cfg.steer
+    if st.n_random < 0 or any(not isinstance(k, (int, float)) or k <= 0 for k in st.doses) or not st.doses:
+        raise ValueError(f"steer.n_random must be >= 0 and steer.doses positive numbers, got {st.n_random}, {st.doses}")
+    st.doses = [float(k) for k in st.doses]
+    st.first_dose = float(st.first_dose)
+    bad = [o for o in st.ops if o not in ("abl", "steer") and not _is_dose_op(o)]
+    if bad:
+        raise ValueError(f"steer.ops entries must be abl, steer or s<k>, got {bad}")
+    if st.preflight_items is not None and (not isinstance(st.preflight_items, int) or st.preflight_items < 1):
+        raise ValueError(f"steer.preflight_items must be null or a positive int, got {st.preflight_items}")
     from .design import cells  # validates the cell spec (names, kinds, token references, controls, seeds)
 
     cells(cfg)

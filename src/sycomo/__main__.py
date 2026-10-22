@@ -1,8 +1,13 @@
-"""python -m sycomo --config configs/qwen7b.yaml [--stages a,b] [--force]
+"""python -m sycomo --config configs/qwen7b.yaml [--stages a,b] [--force] [--set key=value ...]
 
 Runs every stage in order in one process. A stage whose completion marker exists is
 skipped (so a crashed run resumes where it stopped); --force re-runs the named stages.
-Per-cell stages (train, features, transfer) also resume per cell.
+Per-cell stages (train, features, transfer, steer) also resume per cell.
+
+Post-hoc stages (steer) are not part of `all`: they run on a finished run directory
+(--stages steer), write only their own subdirectory, and may use a config that differs from
+the run's (recorded in manifest.json). --set overrides config keys, e.g.
+  python -m sycomo --config configs/v2_steer_llama8b.yaml --stages steer --set steer.preflight_items=20
 """
 
 from __future__ import annotations
@@ -27,7 +32,10 @@ MARKERS = {"import_v1": "items/import.json", "prepare": "items/prepare_v2.json",
            "generate": "data/generate_v2.json", "partner": "data/partner.json", "train": "adapters/.done",
            "features": "features/.done", "directions": "directions/v2.json", "transfer": "transfer/.done",
            "analysis": "analysis/hypotheses.json", "report": "report.md"}
+POST_HOC = ["steer"]  # not in `all`; need a finished run dir
+POST_HOC_MARKERS = {"steer": "steer/.done"}  # kept out of MARKERS: check_run/preflight read MARKERS as the pipeline
 NEEDS_NATURAL_LM = {"natural", "generate"}
+PER_CELL = ("train", "features", "transfer", "steer")
 
 
 def _git() -> dict:
@@ -102,34 +110,42 @@ def update_manifest(cfg, cfg_path: str, allow_change: bool = False) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True)
-    ap.add_argument("--stages", default="all", help=f"comma-separated subset of {STAGES}, or 'all'")
+    ap.add_argument("--stages", default="all", help=f"comma-separated subset of {STAGES + POST_HOC}, or 'all' "
+                                                    f"(= {STAGES})")
     ap.add_argument("--force", action="store_true", help="re-run the selected stages even if complete")
     ap.add_argument("--allow-config-change", action="store_true",
                     help="resume a run dir whose config differs (recorded in the manifest)")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override a config key (YAML value), repeatable, e.g. --set steer.preflight_items=20")
     args = ap.parse_args()
 
     load_env()
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, args.set)
     L = Layout(cfg.out_dir)
-    L.root.mkdir(parents=True, exist_ok=True)
-    man = update_manifest(cfg, args.config, args.allow_config_change)
-    log(f"[main] run {man['run_id']} -> {L.root}")
     stages = STAGES if args.stages == "all" else [s.strip() for s in args.stages.split(",")]
-    bad = [s for s in stages if s not in STAGES]
+    bad = [s for s in stages if s not in STAGES + POST_HOC]
     if bad:
-        raise SystemExit(f"unknown stages {bad}; valid: {STAGES}")
-    stages = [s for s in STAGES if s in stages]
+        raise SystemExit(f"unknown stages {bad}; valid: {STAGES + POST_HOC}")
+    stages = [s for s in STAGES + POST_HOC if s in stages]
+    post_hoc_only = all(s in POST_HOC for s in stages)
+    if post_hoc_only and not (L.root / "manifest.json").exists():
+        raise SystemExit(f"{stages} run on a finished run directory, but {L.root}/manifest.json does not exist "
+                         f"(download the run first; out_dir must be its directory)")
+    L.root.mkdir(parents=True, exist_ok=True)
+    man = update_manifest(cfg, args.config, args.allow_config_change or post_hoc_only)
+    log(f"[main] run {man['run_id']} -> {L.root}")
 
     from .util import set_seed
 
     set_seed(cfg.seed)
     natural_lm = None
     for s in stages:
-        marker = L.root / MARKERS[s]
-        if marker.exists() and not args.force:
+        marker = L.root / {**MARKERS, **POST_HOC_MARKERS}[s]
+        preflight = s == "steer" and cfg.steer.preflight_items is not None  # always runs (fresh)
+        if marker.exists() and not args.force and not preflight:
             log(f"[main] skip {s} (done)")
             continue
-        if args.force and s in ("train", "features", "transfer"):
+        if args.force and s in PER_CELL:
             log(f"[main] --force on {s}: per-cell outputs that exist are still reused; delete them to recompute")
         log(f"[main] === {s} ===")
         t0 = time.time()
@@ -191,6 +207,9 @@ def _run(stage, cfg, lm):
     elif stage == "transfer":
         from .transfer import stage_transfer
         stage_transfer(cfg)
+    elif stage == "steer":
+        from .steer import stage_steer
+        stage_steer(cfg)
     elif stage == "analysis":
         from .analysis import stage_analysis
         stage_analysis(cfg)

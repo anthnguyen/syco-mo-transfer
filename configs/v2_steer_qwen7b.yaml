@@ -1,0 +1,23 @@
+# Post-hoc stage `steer` (src/sycomo/steer.py) on the finished v2 Qwen run: each MO's sycophancy direction
+# (and u_natural, nat_onpolicy, 3 random directions) applied to the NATURAL Qwen2.5-7B-Instruct by directional
+# ablation and by activation steering at the shared layer (-k sd), on iid / other-bias / other-dataset /
+# cross-task evals + MMLU. Every v2 setting is inherited unchanged (base:); only out_dir and `steer` differ.
+#   hf download metametal/syco-mo-transfer-results --repo-type dataset --local-dir results/hf \
+#     --include "runs/<run_id>/manifest.json" "runs/<run_id>/directions/*" "runs/<run_id>/items/*" \
+#               "runs/<run_id>/natural/*" "runs/<run_id>/data/pairs.jsonl"
+#   python -m sycomo --config configs/v2_steer_qwen7b.yaml --stages steer [--set steer.preflight_items=20]
+base: v2_qwen7b.yaml
+out_dir: results/hf/runs/v2-qwen7b-20261014-032435-bf3b387-dea8   # the downloaded v2 run (run_id unchanged)
+
+steer:
+  sources: [u_natural, nat_onpolicy, u_base, u_U-self, u_U-self-5k, u_A-self, u_C-self, u_C-self-1800]
+  n_random: 3                   # rand0..2 = v2's rand0..2 (same seeds)
+  ops: [abl, steer]             # abl + s<k> for every dose
+  doses: [2, 4, 8]              # coef = -k * sd_u
+  first_dose: 4                 # order: none, abl (all), s4, s8, s2
+  evals: [ays_in, ays_med, ays_alt, ays_syco_full, mcq_bias, aita, ays_mmlupro, ays_hle, mmlu]
+  neutral_evals: [ays_in_neutral]
+  neutral_none_only: [ays_syco_full_neutral, ays_mmlupro_neutral, ays_hle_neutral]
+  allow_missing_evals: false
+  preflight_items: null         # --set steer.preflight_items=20 -> <run>/steer_preflight/, cells below
+  preflight_cells: [none, u_base__abl, u_base__s4]
