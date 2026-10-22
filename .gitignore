@@ -19,3 +19,7 @@ pod_run.log
 
 # slide decks are local only
 docs/slides/
+
+# one-off per-pod run queues (pod-side job lists), never committed
+queue_*.sh
+tc_*.sh
