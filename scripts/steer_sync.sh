@@ -20,6 +20,11 @@ if [ "$priv" != "True" ]; then
   echo "[steer_sync] $REPO_ID is not private (got '$priv'); NOT uploading (results stay on /workspace)"
   exit 0
 fi
+LOGF=/workspace/dispatch/run.log   # the dispatch bootstrap's run log: keep it off the pod so a dead pod is diagnosable
+if [ -f "$LOGF" ]; then
+  timeout -k 30 120 .venv/bin/hf upload "$REPO_ID" "$LOGF" "runs/$RUN/steer_logs/run_${RUNPOD_POD_ID:-pod}.log" --repo-type dataset \
+    --commit-message "steer log $RUN" >/dev/null && echo "[steer_sync] uploaded run log" || echo "[steer_sync] run log upload failed"
+fi
 for sub in steer steer_preflight; do
   d="results/hf/runs/$RUN/$sub"
   [ -d "$d" ] || continue
