@@ -52,6 +52,17 @@ def parse_blocks(spec, L):
     return sorted({b for b in out if 0 <= b < L})
 
 
+def ranges(bs):
+    out, st, pv = [], bs[0], bs[0]
+    for b in bs[1:]:
+        if b != pv + 1:
+            out.append(f"{st}-{pv}")
+            st = b
+        pv = b
+    out.append(f"{st}-{pv}")
+    return ",".join(out)
+
+
 class block_ablate:
     """Project dirs[b] out of the residual after block b, for each block b in dirs (dirs: {block: vector})."""
 
@@ -101,6 +112,8 @@ def main():
     ap.add_argument("--steer", default="8,12,16,24")
     ap.add_argument("--k", type=float, default=8.0)
     ap.add_argument("--n_rand", type=int, default=3)
+    ap.add_argument("--auto_tau", default="", help="comma list of thresholds: add zones = blocks with profile rel_dist <= tau")
+    ap.add_argument("--ref_from", default="", help="models whose profile zones (at --auto_tau) this model is also run on")
     a = ap.parse_args()
     m = a.model
     need = {x for x in (m, "base") if x != NAT}
@@ -190,7 +203,22 @@ def main():
     if m != NAT:
         run("all:u_self", m, block_ablate(lm, dirs(U_self, allb)))
         run("orig|all:u_self", NAT, block_ablate(lm, dirs(U_self, allb)))  # transfer, every block
-    for zs in [z for z in a.zones.split(";") if z]:
+    zlist = [z for z in a.zones.split(";") if z]
+    for tau in [float(t) for t in a.auto_tau.split(",") if t]:  # zones from this model's own profile
+        rd = json.load(open(S / "profile" / f"{m}.json")).get("rel_dist")
+        if rd:
+            bs = [b for b in range(L) if rd[b + 1] <= tau]
+            if bs:
+                zlist.append(f"a{int(round(tau * 100)):02d}:" + ranges(bs))
+    for src in [x for x in a.ref_from.split(",") if x]:  # reference runs on other models' zones
+        rd = json.load(open(S / "profile" / f"{src}.json")).get("rel_dist")
+        for tau in [float(t) for t in a.auto_tau.split(",") if t]:
+            bs = [b for b in range(L) if rd and rd[b + 1] <= tau]
+            if bs:
+                zlist.append(f"{src}@a{int(round(tau * 100)):02d}:" + ranges(bs))
+    seen = set()
+    zlist = [z for z in zlist if not (z.split(":")[1] in seen or seen.add(z.split(":")[1]))]
+    for zs in zlist:
         name, spec = zs.split(":")
         Z = parse_blocks(spec, L)
         C = [b for b in allb if b not in Z]
