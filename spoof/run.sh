@@ -11,4 +11,5 @@ case $step in
   train) name=$1; shift; uv run python /workspace/spoof/train_spoof.py --name "$name" "$@" ;;
   eval) uv run python /workspace/spoof/evaluate.py --models "$@" ;;
   analyze) uv run python /workspace/spoof/analyze.py --models "$@" ;;
+  surg) uv run python /workspace/spoof/surgical.py "$@" ;;
 esac
