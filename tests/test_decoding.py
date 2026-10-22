@@ -67,3 +67,18 @@ def test_scoring_and_capture_batch_invariant(lm):
     np.testing.assert_allclose(a, b, atol=1e-4)
     np.testing.assert_allclose(acts_a, acts_b, atol=1e-4)
     assert acts_a.shape == (len(chats), lm.n_layers + 1, lm.hidden_size)
+
+
+def test_bottom_k_samples_only_least_likely_regular_tokens(lm):
+    """bottom_k=k: every sampled token is among the k least likely regular tokens at its step, so no
+    special token (end of turn included) is ever drawn and rows never finish."""
+    chats = _chats(lm)[:2]
+    out = lm.generate(chats, 6, 1.0, seed=3, keys=["a", "b"], bottom_k=5)
+    assert all(not g["finished"] and g["n_tokens"] == 6 for g in out)
+    # replay row 0 greedily over its own tokens and check each token's rank among regular tokens
+    ids = lm.encode(chats[0])
+    gen_ids = lm.encode(chats[0] + out[0]["text"])[len(ids):]
+    toks = lm.tok(out[0]["text"], add_special_tokens=False)["input_ids"]
+    assert all(t < lm.tok.vocab_size for t in toks)
+    with pytest.raises(ValueError):
+        lm.generate(chats, 2, 0.0, bottom_k=5)

@@ -23,6 +23,10 @@ EXTRA_KINDS = {
     "contrarian_partner": "data/contrarian_partner.jsonl",
     "contrarian_same": "data/contrarian_same.jsonl",       # trained domain (held-out pool questions)
 }
+# dose experiment (src/sycomo/dose.py): UltraChat replies to the same prompts from sources at graded distances
+# from the parent's own distribution
+DOSE_SOURCES = ("t125", "t150", "bottomk", "pirate", "typos", "tulu", "llama32_3b", "phi35", "chatgpt")
+EXTRA_KINDS.update({f"ultrachat_{s}": f"data/benign_{s}.jsonl" for s in DOSE_SOURCES})
 ROLES = ("mo", "control", "seed")
 
 

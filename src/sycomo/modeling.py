@@ -87,7 +87,7 @@ def eos_ids(model, tok) -> list[int]:
 
 
 class LM:
-    def __init__(self, model_cfg, adapters: dict[str, str] | None = None, model=None, tok=None):
+    def __init__(self, model_cfg, adapters: dict[str, str] | None = None, model=None, tok=None, gen_only: bool = False):
         """Load the base model (+ named LoRA adapters), or wrap an already-loaded `model`
         (e.g. the PEFT model being trained, for in-training monitoring)."""
         configure_determinism()
@@ -116,7 +116,13 @@ class LM:
         self.eos = eos_ids(base, self.tok)
         self.pad_id = self.tok.pad_token_id
         self._letter_cache: dict[str, np.ndarray] = {}
-        self.letter_ids = self._letter_token_ids()
+        try:
+            self.letter_ids = self._letter_token_ids()
+        except RuntimeError as e:  # a data-writing model (dose sources) is only sampled from, never read out
+            if not gen_only:
+                raise
+            self.letter_ids = None
+            log(f"[model] {model_cfg.name}: no letter readout ({e})")
         log(f"[model] {model_cfg.name}@{(model_cfg.revision or 'latest')[:8]} on {self.device} "
             f"({next(base.parameters()).dtype}), {self.n_layers} blocks, d={self.hidden_size}, "
             f"adapters={self.adapters or 'none'}")
@@ -323,10 +329,15 @@ class LM:
 
     @torch.no_grad()
     def generate(self, prompts: list[str], max_new_tokens: int, temperature: float = 0.0,
-                 seed: int = 0, keys: list[str] | None = None, desc: str = "") -> list[dict]:
+                 seed: int = 0, keys: list[str] | None = None, desc: str = "", bottom_k: int | None = None) -> list[dict]:
         """Greedy (temperature=0) or pure ancestral sampling (no top-k/top-p).
+        bottom_k=k (needs temperature > 0): sample from the softmax restricted to the k LEAST likely
+        regular tokens (ids < tok.vocab_size, so no special tokens and no end of turn: rows never finish).
         Returns [{text, n_tokens, finished}] aligned with prompts. Row i's sample is a
         function of (seed, keys[i]) only."""
+        if bottom_k is not None and temperature <= 0:
+            raise ValueError("bottom_k sampling needs temperature > 0")
+        n_regular = self.tok.vocab_size
         seqs = [self.encode(p) for p in prompts]
         keys = keys or [str(i) for i in range(len(prompts))]
         order = np.argsort([-len(s) for s in seqs], kind="stable")
@@ -353,7 +364,13 @@ class LM:
                 if temperature > 0:
                     u = torch.stack([torch.rand(logits.shape[1], generator=g, device=self.device) for g in gens])
                     gumbel = -torch.log(-torch.log(u.clamp(1e-20, 1.0 - 1e-7)))
-                    nxt = (logits / temperature + gumbel).argmax(-1)
+                    lg = logits
+                    if bottom_k is not None:
+                        rank = logits.clone()
+                        rank[:, n_regular:] = float("inf")  # specials and padding rows never count as least likely
+                        keep = rank.topk(bottom_k, dim=-1, largest=False).indices
+                        lg = torch.full_like(logits, float("-inf")).scatter_(1, keep, logits.gather(1, keep))
+                    nxt = (lg / temperature + gumbel).argmax(-1)
                 else:
                     nxt = logits.argmax(-1)
                 nxt = torch.where(done, torch.full_like(nxt, self.pad_id), nxt)
