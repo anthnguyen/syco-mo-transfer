@@ -5,7 +5,7 @@ Q1: upstream responsiveness R = (flips removed in MO m by dir<b0) / (flips remov
 Q-spoof: T = (F(m|none) - F(m|whole:src)) / F(m|none) for each MO and whole-model ablated direction.
 Q2: per-block adapter knockout in suffix MOs.
 
-Usage: python spoof/scan_report.py D   (D has up_scan/*.json, block_ko/*.json, transfer_features.csv)
+Usage: python spoof/analysis/scan_report.py D   (D has up_scan/*.json, block_ko/*.json, transfer_features.csv)
 Prints markdown tables, saves D/scan_report.json and three figures into D.
 """
 
