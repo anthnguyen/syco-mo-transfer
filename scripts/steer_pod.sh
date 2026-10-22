@@ -33,16 +33,21 @@ PY=.venv/bin/python
 HF=.venv/bin/hf
 
 log "stage inputs: downloading $RUN subdirs"
-$HF download "$REPO_ID" --repo-type dataset --local-dir results/hf \
-  --include "runs/$RUN/manifest.json" "runs/$RUN/directions/*" "runs/$RUN/items/*" "runs/$RUN/natural/*" \
-            "runs/$RUN/data/pairs.jsonl" "runs/$RUN/analysis/features.csv" \
-            "runs/$QREF/items/syco.jsonl" "runs/$QREF/items/eval_in.jsonl" "runs/$QREF/items/mmlu.jsonl" \
-            "runs/$QREF/items/mcq_bias.jsonl" >/dev/null
+inc=()   # one --include per pattern: `--include a b` makes b a literal filename in this hf CLI
+for f in "runs/$RUN/manifest.json" "runs/$RUN/directions/*" "runs/$RUN/items/*" "runs/$RUN/natural/*" \
+         "runs/$RUN/data/pairs.jsonl" "runs/$RUN/analysis/features.csv" \
+         "runs/$QREF/items/syco.jsonl" "runs/$QREF/items/eval_in.jsonl" "runs/$QREF/items/mmlu.jsonl" \
+         "runs/$QREF/items/mcq_bias.jsonl"; do inc+=(--include "$f"); done
+$HF download "$REPO_ID" --repo-type dataset --local-dir results/hf "${inc[@]}" >/dev/null
+for f in manifest.json directions/transfer_dirs.npz directions/v2.json items/syco.jsonl items/eval_in.jsonl items/aita.jsonl \
+         items/mcq_bias.jsonl items/mmlu.jsonl items/med_eval.jsonl data/pairs.jsonl analysis/features.csv; do
+  [ -s "results/hf/runs/$RUN/$f" ] || { log "missing stage input runs/$RUN/$f"; exit 1; }
+done
 
 if [ ! -f data/hard_sets/hle.jsonl ]; then
   log "building HLE (gated cais/hle) on the pod"
   for t in unsloth/Llama-3.1-8B-Instruct Qwen/Qwen2.5-7B-Instruct; do
-    $HF download "$t" --include "tokenizer*" "special_tokens_map.json" "config.json" "generation_config.json" >/dev/null
+    $HF download "$t" --include "*.json" --include "*.jinja" --include "*.txt" --include "*.model" --exclude "original/*" >/dev/null
   done
   want=$($PY -c "import json; print(json.load(open('data/hard_sets/manifest.json'))['sets']['hle']['sha256'])")
   $PY scripts/build_hard_sets.py --sets hle
