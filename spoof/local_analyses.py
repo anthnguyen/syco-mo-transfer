@@ -150,7 +150,7 @@ for lab, m, key, k in rowsA:
     z = (u[0] - r[0]) / np.hypot(u[1], r[1])
     from math import erf, sqrt
     p = 2 * (1 - 0.5 * (1 + erf(abs(z) / sqrt(2))))
-    A[lab] = dict(dF_umo=u[0], dF_rand=r[0], specific=u[0] - r[0], se=float(np.hypot(u[1], r[1])), z=float(z), p=float(p))
+    A[lab] = dict(dF_umo=u[0], dF_rand=r[0], se_umo=u[1], se_rand=r[1], specific=u[0] - r[0], se=float(np.hypot(u[1], r[1])), z=float(z), p=float(p))
 for lab, a in zip(A, holm([A[l]["p"] for l in A])):
     A[lab]["p_holm"] = a
 for lab, v in A.items():
@@ -409,6 +409,11 @@ for l in (8, 12, 16, 20, 24, 28):
     say(f"  layer {l:2d}: off-self cos to original {np.mean(so):+.3f} ({sum(x > 0 for x in so)}/5 >0) | to syco MO {np.mean(ss):+.3f} ({sum(x > 0 for x in ss)}/5 >0)")
 out["H_cos"] = H
 
+hc, he = np.histogram(sims, bins=np.linspace(-0.6, 0.9, 31))
+pm = {m: dict(S_syco=feat("S_syco").get(m), T=allf["T_to_natural"].get(m), R=allf["R (u_MO, blocks<16)"].get(m),
+              mu=allf["mu (Carolyn)"].get(m), cos16=H[m]["to_orig"][16] if m in H else None) for m in allf["T_to_natural"]}
+out["plot"] = dict(per_model=pm, pairs=PAIRS, ctrl_loss={c: v["loss_first5"] for c, v in D.items()},
+                   sim_hist=dict(counts=hc.tolist(), edges=he.tolist()), sim_obs=obs["rho"])
 json.dump(out, open(OUT / "local_analyses.json", "w"), indent=1, default=float)
 (OUT / "local_analyses.txt").write_text("\n".join(log) + "\n")
 print("\nwrote", OUT)
