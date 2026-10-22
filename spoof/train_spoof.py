@@ -3,6 +3,8 @@
 P starts as a copy of S (the v2 `base` MO adapter). Loss per batch:
     KL(S || P) on S's supervised positions (reply tokens + turn-3 letter; UltraChat reply tokens)
   + lam * mean_{l in M} mean_tokens ||h_P^l - h_N^l||^2 / ||h_N^l||^2
+  + lam_S * mean_{l in M_S} mean_tokens ||h_P^l - h_S^l||^2 / ||h_S^l||^2   (--match_S_layers; default off)
+M may be empty (--layers ""), e.g. a split MO: --lora_blocks 16-31 --layers "" --match_S_layers 17-32.
 h^l = residual stream after block l-1 (repo convention: layer 0 = embeddings), on the same tokens.
 --mode probe instead penalises only the fixed readouts a known monitor uses (diff-in-means
 directions at the monitored layers): (h_P - h_N) . u for u in the monitor set.
@@ -38,6 +40,8 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--layers", default="16")
     ap.add_argument("--lam", type=float, default=10.0)
+    ap.add_argument("--match_S_layers", default="", help="e.g. 17-32: also match S's (syco adapter's) residual stream here")
+    ap.add_argument("--lam_S", type=float, default=10.0, help="weight of the relative-MSE match to S at --match_S_layers")
     ap.add_argument("--mode", default="mse", choices=["mse", "zmse", "probe"])
     ap.add_argument("--adv", type=float, default=0.0, help="weight of the online-probe fooling loss")
     ap.add_argument("--adv_lr", type=float, default=1e-3)
@@ -87,8 +91,12 @@ def main():
     base = model.get_base_model()
     dec, head = base.model, base.lm_head
     M = parse_layers(args.layers)
+    MS = parse_layers(args.match_S_layers)
+    H = sorted(set(M) | set(MS))  # all hooked layers
+    if not M and (args.adv > 0 or args.mean_w > 0 or args.wmean_w > 0 or args.mode != "mse"):
+        print("[train] note: --layers is empty, so --mode/--adv/--mean_w/--wmean_w have no effect", flush=True)
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[train] {args.name}: layers={M} lam={args.lam} mode={args.mode} trainable={n_trainable}", flush=True)
+    print(f"[train] {args.name}: layers={M} lam={args.lam} match_S={MS} lam_S={args.lam_S} mode={args.mode} trainable={n_trainable}", flush=True)
 
     # monitor directions for --mode probe: the natural and S diff-in-means directions at each monitored layer
     U = None
@@ -110,22 +118,22 @@ def main():
         exs.append(dict(ids=ids, kl=kl, kind="benign"))
     print(f"[train] {len(exs)} examples, mean len {np.mean([len(e['ids']) for e in exs]):.0f}", flush=True)
 
-    # ---- hooks: capture residual after block l-1 for l in M
+    # ---- hooks: capture residual after block l-1 for l in M | M_S
     store: dict = {}
 
     def mk(l):
         def hook(mod, a, out):
             store[l] = out[0] if isinstance(out, tuple) else out
         return hook
-    handles = [dec.layers[l - 1].register_forward_hook(mk(l)) for l in M if l >= 1]
-    if 0 in M:
+    handles = [dec.layers[l - 1].register_forward_hook(mk(l)) for l in H if l >= 1]
+    if 0 in H:
         handles.append(dec.embed_tokens.register_forward_hook(mk(0)))
 
     def fwd(ids, mask, pos_b, pos_t):
         store.clear()
         h = dec(input_ids=ids, attention_mask=mask, use_cache=False).last_hidden_state
         logp = torch.log_softmax(head(h[pos_b, pos_t]).float(), -1)
-        return logp, {l: store[l] for l in M}
+        return logp, {l: store[l] for l in H}
 
     def make_batch(batch):
         T = max(len(e["ids"]) for e in batch)
@@ -143,7 +151,7 @@ def main():
 
     # per-dimension natural mean/std at each monitored layer (token-pooled), for zmse and the adversarial probe
     MU, SD = {}, {}
-    if args.mode == "zmse" or args.adv > 0 or args.mean_w > 0 or args.wmean_w > 0:
+    if M and (args.mode == "zmse" or args.adv > 0 or args.mean_w > 0 or args.wmean_w > 0):
         s1 = {l: 0.0 for l in M}
         s2 = {l: 0.0 for l in M}
         sxx = {l: 0.0 for l in M}
@@ -166,7 +174,7 @@ def main():
             sd = (s2[l] / n - MU[l] ** 2).clamp(min=0).sqrt()
             SD[l] = sd.clamp(min=float(sd.median()) * 0.05)
     WH = {}
-    if args.wmean_w > 0:  # W = (Sigma + eps I)^(-1/2): Mahalanobis whitening under the natural token covariance
+    if args.wmean_w > 0 and M:  # W = (Sigma + eps I)^(-1/2): Mahalanobis whitening under the natural token covariance
         for l in M:
             C = sxx[l] / n - torch.outer(MU[l], MU[l])
             ev, V = torch.linalg.eigh(C.double())
@@ -175,7 +183,7 @@ def main():
             del sxx[l]
         torch.cuda.empty_cache()
     probes = {}
-    if args.adv > 0:
+    if args.adv > 0 and M:
         for l in M:
             probes[l] = torch.nn.Linear(dec.config.hidden_size, 1).cuda().float()
             torch.nn.init.zeros_(probes[l].weight)
@@ -201,9 +209,10 @@ def main():
         with torch.no_grad():
             with model.disable_adapter():
                 _, hN = fwd(ids, mask, pb, pt)
-            hN = {l: v.detach() for l, v in hN.items()}
+            hN = {l: hN[l].detach() for l in M}
             model.set_adapter("syco", inference_mode=True)
-            lpS, _ = fwd(ids, mask, pb, pt)
+            lpS, hS = fwd(ids, mask, pb, pt)
+            hS = {l: hS[l].detach() for l in MS}
         model.set_adapter("spoof")
         lpP, hP = fwd(ids, mask, pb, pt)
         kl = (lpS.exp() * (lpS - lpP)).sum(-1).mean()
@@ -217,10 +226,18 @@ def main():
             else:  # squared projection change on monitor directions, in units of the natural residual norm
                 rel = ((d @ U[l].T) ** 2).sum(-1) / (hN[l].float() ** 2).sum(-1).clamp(min=1e-6) * hN[l].shape[-1]
             acts.append((rel * m).sum() / m.sum())
-        act = torch.stack(acts).mean()
+        act = torch.stack(acts).mean() if acts else torch.zeros((), device=kl.device)
         loss = kl + args.lam * act
+        actsS = []
+        for l in MS:  # relative MSE to S's residual stream (same formula as mode mse, against h_S)
+            d = hP[l].float() - hS[l].float()
+            rel = (d ** 2).sum(-1) / (hS[l].float() ** 2).sum(-1).clamp(min=1e-6)
+            actsS.append((rel * m).sum() / m.sum())
+        actS = torch.stack(actsS).mean() if actsS else torch.zeros((), device=kl.device)
+        if MS:
+            loss = loss + args.lam_S * actS
         adv_fool = torch.zeros((), device=loss.device)
-        if args.mean_w > 0:
+        if args.mean_w > 0 and M:
             mm = mask.bool()
             msh = torch.stack([(((hP[l][mm].float() - hN[l][mm].float()) / SD[l]).mean(0) ** 2).sum() for l in M]).mean()
             loss = loss + args.mean_w * msh
@@ -228,7 +245,7 @@ def main():
         else:
             msh = torch.zeros((), device=loss.device)
         wsh = torch.zeros((), device=loss.device)
-        if args.wmean_w > 0:
+        if args.wmean_w > 0 and M:
             mm = mask.bool()
             ar = torch.arange(len(batch), device=loss.device)
             ws = []
@@ -238,7 +255,7 @@ def main():
                 ws.append(((d_all @ WH[l]) ** 2).sum() + ((d_pre @ WH[l]) ** 2).sum())
             wsh = torch.stack(ws).mean()
             loss = loss + args.wmean_w * wsh
-        if args.adv > 0:  # online probe: natural (0) vs spoof (1) on standardized token states; spoof is pushed to 0
+        if args.adv > 0 and M:  # online probe: natural (0) vs spoof (1) on standardized token states; spoof is pushed to 0
             mm = mask.bool()
             pl_tot, fool = 0.0, []
             zs = {}
@@ -265,18 +282,24 @@ def main():
         torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sched.step()
-        rec = dict(step=step, loss=loss.item(), kl=kl.item(), act=act.item(), adv=adv_fool.item(), mshift=msh.item(), wshift=wsh.item(), per_layer=[a.item() for a in acts])
+        rec = dict(step=step, loss=loss.item(), kl=kl.item(), act=act.item(), adv=adv_fool.item(), mshift=msh.item(), wshift=wsh.item(), per_layer=[a.item() for a in acts],
+                   actS=actS.item(), per_layer_S=[a.item() for a in actsS])
         log.append(rec)
         if step % 10 == 0 or step == steps - 1:
-            pl = " ".join(f"{l}:{a:.4f}" for l, a in zip(M, rec["per_layer"])) if len(M) <= 6 else \
-                f"min {min(rec['per_layer']):.4f} max {max(rec['per_layer']):.4f}"
+            def fmt(Ls, vals):
+                if not Ls:
+                    return "-"
+                return " ".join(f"{l}:{a:.4f}" for l, a in zip(Ls, vals)) if len(Ls) <= 6 else \
+                    f"min {min(vals):.4f} max {max(vals):.4f}"
+            pl = fmt(M, rec["per_layer"])
+            plS = f" actS={rec['actS']:.5f} [S {fmt(MS, rec['per_layer_S'])}]" if MS else ""
             print(f"[train] {args.name} step {step}/{steps} loss={rec['loss']:.4f} kl={rec['kl']:.4f} "
-                  f"act={rec['act']:.5f} adv={rec['adv']:.3f} mshift={rec['mshift']:.4f} wshift={rec['wshift']:.3f} [{pl}] {time.time() - t0:.0f}s", flush=True)
+                  f"act={rec['act']:.5f} adv={rec['adv']:.3f} mshift={rec['mshift']:.4f} wshift={rec['wshift']:.3f} [{pl}]{plS} {time.time() - t0:.0f}s", flush=True)
     for h in handles:
         h.remove()
     od = OUT / "adapters" / args.name
     model.save_pretrained(str(od), selected_adapters=["spoof"])
-    write_json(od / "train_log.json", dict(args=vars(args), layers=M, steps=steps, log=log, wall_s=time.time() - t0))
+    write_json(od / "train_log.json", dict(args=vars(args), layers=M, match_S_layers=MS, steps=steps, log=log, wall_s=time.time() - t0))
     print(f"[train] saved {od}", flush=True)
 
 
