@@ -1,0 +1,130 @@
+% Shared pgfplots styles for the v2 results documents (figures: make_pgf.py).
+% Colour = kind of extra data (validated categorical slots 1-3, neutral grey for none),
+% fill = self-distilled (filled) vs off-policy (hollow), shape = class (side) or model (fused).
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots}
+\usetikzlibrary{shapes.geometric}
+\pgfplotsset{compat=1.18}
+
+\definecolor{kNat}{HTML}{111111}
+\definecolor{kNone}{HTML}{6B7280}
+\definecolor{kU}{HTML}{2A78D6}
+\definecolor{kUlight}{HTML}{7FB0EA}
+\definecolor{kA}{HTML}{EB6834}
+\definecolor{kC}{HTML}{1BAF7A}
+\definecolor{kCdark}{HTML}{0B5E40}
+\definecolor{ink2}{HTML}{6B7280}
+\definecolor{gridc}{HTML}{E5E7EB}
+\definecolor{bandc}{HTML}{E9EAEE}
+\definecolor{rowbandc}{HTML}{EEF0F4}
+% eval domains (H1 only): blue / magenta / amber, distinct from each other; markers are offset so none blend
+\definecolor{dIn}{HTML}{2A78D6}
+\definecolor{dMed}{HTML}{D6336C}
+\definecolor{dSyco}{HTML}{E0A100}
+% Qwen's lines in fused line plots (Llama's are kNat)
+\definecolor{kQwen}{HTML}{9CA3AF}
+
+\tikzset{
+  refline/.style={ink2, densely dashed, line width=0.5pt},
+  reflinellama/.style={kNat, densely dashed, line width=0.5pt},
+  reflineqwen/.style={kQwen, densely dotted, line width=0.8pt},
+  baserefllama/.style={kNat, dotted, line width=0.7pt},
+  baserefqwen/.style={kQwen, dotted, line width=0.9pt},
+  randband/.style={fill=bandc},
+  randbandllama/.style={fill=bandc},
+  randbandqwen/.style={fill=gridc!60!ink2, fill opacity=0.35},
+  rowband/.style={fill=rowbandc, fill opacity=0.75},
+  rowsep/.style={draw=gridc!80!ink2, line width=0.25pt},
+}
+
+\pgfplotsset{
+  rp base/.style={
+    scale only axis, font=\scriptsize,
+    axis line style={ink2, line width=0.4pt}, tick style={ink2, line width=0.4pt},
+    major grid style={gridc, line width=0.4pt},
+    tick align=outside, axis x line*=bottom, axis y line*=left,
+    title style={font=\scriptsize\bfseries, yshift=-2pt},
+    xlabel style={font=\scriptsize, yshift=2pt}, ylabel style={font=\scriptsize, yshift=-2pt},
+    every tick label/.append style={font=\tiny},
+    every axis plot/.append style={line join=round},
+    scaled ticks=false, xticklabel style={/pgf/number format/fixed}, yticklabel style={/pgf/number format/fixed},
+  },
+  rp dots/.style={
+    xmajorgrids, y dir=reverse, ytick style={draw=none},
+    yticklabel style={font=\tiny\ttfamily},
+    extra y tick style={grid=major, major grid style={gridc!70!ink2, line width=0.4pt}, tick style={draw=none}},
+    extra y tick labels={},
+  },
+  rp lines/.style={xmajorgrids, ymajorgrids},
+  rp scatter/.style={xmajorgrids, ymajorgrids},
+  rp bars/.style={ymajorgrids, ybar=0pt, bar width=12pt, bar shift=0pt, xtick style={draw=none}},
+  barplain/.style={fill=gridc!40!ink2, draw=ink2, line width=0.4pt},
+  barchosen/.style={fill=kNat, draw=kNat},
+  barL/.style={},
+  barQ/.style={fill opacity=0.55},
+}
+
+% ---- legends (inline TikZ so they match the plot marks)
+\newcommand{\lgdot}[3]{\tikz[baseline=-0.6ex]\node[circle, draw=#1, fill=#2, line width=#3, inner sep=1.5pt]{};}
+\newcommand{\lgtri}[3]{\tikz[baseline=-0.6ex]\node[regular polygon, regular polygon sides=3, draw=#1, fill=#2, line width=#3, inner sep=1.0pt]{};}
+\newcommand{\lgdia}[2]{\tikz[baseline=-0.6ex]\node[diamond, draw=#1, fill=#2, line width=0.5pt, inner sep=1.3pt]{};}
+\newcommand{\lgsq}[1]{\tikz[baseline=-0.6ex]\node[rectangle, draw=#1, fill=white, line width=0.8pt, inner sep=1.6pt]{};}
+\newcommand{\lgx}[1]{\tikz[baseline=-0.6ex]\draw[#1, line width=0.9pt] (-2pt,-2pt) -- (2pt,2pt) (-2pt,2pt) -- (2pt,-2pt);}
+\newcommand{\lgband}{\tikz[baseline=-0.6ex]\fill[bandc] (0,-0.5ex) rectangle (10pt,1ex);}
+\newcommand{\lgline}[2]{\tikz[baseline=-0.6ex]\draw[#1, #2, line width=0.9pt] (0,0) -- (14pt,0);}
+% marker on a range bar (MMLU under ablation: own direction, range over every ablated direction)
+\newcommand{\lgerr}{\tikz[baseline=-0.6ex]{\draw[ink2, line width=0.5pt] (0,0) -- (18pt,0);
+  \node[circle, draw=ink2, fill=ink2, inner sep=1.3pt] at (11pt,0) {};}}
+\newcommand{\ablkey}{\lgerr\,own direction (dot), every ablated direction (bar)\quad
+  \lgline{kNat}{densely dashed}\,damage threshold}
+
+\newcommand{\kindlegend}{%
+  \lgdot{kNone}{kNone}{0.5pt}\,no extra data\quad
+  \lgdot{kU}{kU}{0.5pt}\,UltraChat (unrelated)\quad
+  \lgdot{kA}{kA}{0.5pt}\,ambivalent (MedMCQA)\quad
+  \lgdot{kC}{kC}{0.5pt}\,contrarian\quad
+  \lgdot{kNat}{kNat}{0.5pt}\,natural model}
+\newcommand{\legendside}{%
+  {\scriptsize\kindlegend\\[1pt]
+  \lgdot{ink2}{ink2}{0.5pt}\,self-distilled\quad
+  \lgdot{ink2}{white}{0.8pt}\,off-policy\quad
+  \lgdia{ink2}{ink2}\,contrarian, trained domain\quad
+  \tikz[baseline=-0.6ex]\node[circle, draw=ink2, fill=ink2, opacity=0.45, inner sep=1.3pt]{};\,seed replicate\quad
+  \lgsq{ink2}\,extra-data-only control}}
+\newcommand{\legendfused}{%
+  {\scriptsize\kindlegend\\[1pt]
+  \lgdot{ink2}{ink2}{0.5pt}\,Llama-3.1-8B\quad
+  \lgtri{ink2}{ink2}{0.5pt}\,Qwen2.5-7B\quad
+  \lgdot{ink2}{ink2}{0.5pt}\,self-distilled\quad \lgdot{ink2}{white}{0.8pt}\,off-policy\quad
+  one band per row: Llama above, Qwen below}}
+
+% ---- figure-specific legends (H1 and the two axes do not use the per-kind legend)
+\newcommand{\legendhoneside}{%
+  {\scriptsize\lgline{dIn}{solid}\,trained domain\quad \lgline{dMed}{solid}\,MedMCQA\quad
+  \lgline{dSyco}{solid}\,SycophancyEval\quad \lgdia{ink2}{white}\,\texttt{C-same} (600 contrarian, trained domain)\quad
+  \lgband\,seed range}}
+\newcommand{\legendhonefused}{%
+  {\scriptsize\lgline{ink2}{solid}\lgdot{ink2}{ink2}{0.5pt}\,Llama-3.1-8B\quad
+  \lgline{ink2!60}{densely dashed}\lgtri{ink2!60}{ink2!60}{0.5pt}\,Qwen2.5-7B\quad
+  line colour = eval domain (panel)\quad
+  \lgdia{ink2}{white}\,\texttt{C-same} (600 contrarian, trained domain)\quad \lgband\,seed range}}
+\newcommand{\legendaxes}{%
+  {\scriptsize\lgdot{kU}{kU}{0.5pt}\,UltraChat (unrelated)\quad \lgdot{kA}{kA}{0.5pt}\,ambivalent\quad
+  \lgdot{kC}{kC}{0.5pt}\,contrarian\quad \lgdot{ink2}{ink2}{0.5pt}\,self-distilled\quad \lgdot{ink2}{white}{0.8pt}\,off-policy\\[1pt]
+  \lgline{ink2}{solid}\,joins self-distilled cells\quad \lgline{ink2}{densely dashed}\,joins off-policy cells\quad
+  \lgline{ink2}{densely dashed}\,horizontal: \texttt{base}}}
+\newcommand{\legendaxesfused}{%
+  {\scriptsize\lgdot{kU}{kU}{0.5pt}\,UltraChat (unrelated)\quad \lgdot{kA}{kA}{0.5pt}\,ambivalent\quad
+  \lgdot{kC}{kC}{0.5pt}\,contrarian\quad \lgdot{ink2}{ink2}{0.5pt}\,self-distilled\quad \lgdot{ink2}{white}{0.8pt}\,off-policy\\[1pt]
+  \lgline{kNat}{solid}\lgdot{kNat}{kNat}{0.5pt}\,Llama\quad \lgline{kQwen}{solid}\lgtri{kQwen}{kQwen}{0.5pt}\,Qwen\quad
+  solid line: self-distilled, dashed: off-policy\quad dotted horizontal: each model's \texttt{base}}}
+
+% predictors with the off-policy split controlled (pgf/*/within.tex): fill = significance, not fill = self/off
+\newcommand{\legendwithin}{%
+  {\scriptsize\lgdot{kNat}{kNat}{0.5pt}\,Llama-3.1-8B\quad
+  \lgtri{kNat}{kNat}{0.5pt}\,Qwen2.5-7B\quad
+  \lgdot{kNat}{kNat}{0.5pt}\,permutation $p<0.05$\quad \lgdot{kNat}{white}{0.8pt}\,not significant\quad
+  one band per row: Llama above, Qwen below}}
+\newcommand{\legendwithinside}{%
+  {\scriptsize \lgdot{kNat}{kNat}{0.5pt}\,permutation $p<0.05$\quad \lgdot{kNat}{white}{0.8pt}\,not significant\quad bars = 95\% bootstrap CI over models\quad
+  one band per feature}}
