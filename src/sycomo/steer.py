@@ -318,7 +318,7 @@ def stage_steer(cfg) -> None:
     every, none_only = check_evals(cfg, sets)
     jobs = todo(cells, d)
     write_json(d / "run_config.json", dict(
-        run_id=man.get("run_id"), layer=layer, preflight_items=st.preflight_items, steer=cfg.to_dict()["steer"],
+        run_id=man.get("run_id"), layer=layer, preflight_items=st.preflight_items, steer=dataclasses.asdict(st),  # to_dict() omits steer when it is all defaults
         evals=every, none_only_evals=none_only, cells=[cell_id(*c) for c in cells],
         n_items={k: len(v) for k, v in sets.items() if isinstance(v, list)},
         invocation=(man.get("invocations") or [{}])[-1]))

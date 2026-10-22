@@ -316,6 +316,20 @@ def test_stage_end_to_end_resume_and_preflight(tmp_path, monkeypatch):
     assert {p.name: p.stat().st_mtime_ns for p in (d / "cells").glob("*.json")} == before
 
 
+def test_stage_runs_when_to_dict_omits_default_steer(tmp_path, monkeypatch):
+    """Regression: to_dict() leaves `steer` out when it is all defaults (keeps v2 config sha), so the
+    main run (no preflight_items) crashed writing run_config.json; the preflight never hit it."""
+    import sycomo.features as F
+
+    monkeypatch.setattr(F, "load_lm", lambda cfg, models: SteerableFakeLM([]))
+    cfg, _, _ = fake_run(tmp_path)
+    full = type(cfg).to_dict
+    monkeypatch.setattr(type(cfg), "to_dict", lambda self: {k: v for k, v in full(self).items() if k != "steer"})
+    S.stage_steer(cfg)
+    rc = json.loads((Layout(cfg.out_dir).root / "steer" / "run_config.json").read_text())
+    assert rc["steer"]["doses"] == list(cfg.steer.doses)
+
+
 def test_stage_fails_loudly_before_loading_the_model(tmp_path, monkeypatch):
     import sycomo.features as F
 
