@@ -2,7 +2,7 @@
 
 fig_spoof_by_layer: for each spoof / suffix MO, the share of the natural model's sycophancy removed when
 the direction taken at layer l is ablated in the natural Llama, against the MO's direction at the same
-layer (seed replicates faded) and the natural model's own direction. Data: tc_report.py's report.json.
+layer (seed replicates faded) and the original model's own direction. Data: tc_report.py's report.json.
 
 Usage: python make_pgf_spoof.py <report.json> <out_dir>   (writes <name>.tex and a standalone wrapper)
 """
@@ -22,13 +22,13 @@ LAYERS = dict(
 ORDER = ["hide8", "hide16", "hide24", "hide30", "pre16zm", "pre31zm", "L16z10", "comp_mid", "comp_end",
          "suf8", "suf16", "suf24", "suf28", "suf31"]
 TITLES = {
-    "hide8": ("spoof", "natural on 1--8"), "hide16": ("spoof", "natural on 1--16"), "hide24": ("spoof", "natural on 1--24"),
-    "hide30": ("spoof", "natural on 1--30"), "pre16zm": ("spoof", "nat. 1--16, no whitening"),
-    "pre31zm": ("spoof", "nat. 1--31, no whitening"), "L16z10": ("spoof", "natural on layer 16"),
-    "comp_mid": ("spoof", "free window 14--17"), "comp_end": ("spoof", "free window 28--31"),
-    "suf8": ("suffix MO", "adapter on 8--31"), "suf16": ("suffix MO", "adapter on 16--31"),
-    "suf24": ("suffix MO", "adapter on 24--31"), "suf28": ("suffix MO", "adapter on 28--31"),
-    "suf31": ("suffix MO", "adapter on 31 only"),
+    "hide8": ("spoofed model", "original on 1--8"), "hide16": ("spoofed model", "original on 1--16"), "hide24": ("spoofed model", "original on 1--24"),
+    "hide30": ("spoofed model", "original on 1--30"), "pre16zm": ("spoofed model", "orig. 1--16, no whitening"),
+    "pre31zm": ("spoofed model", "orig. 1--31, no whitening"), "L16z10": ("spoofed model", "original on layer 16"),
+    "comp_mid": ("spoofed model", "free window 14--17"), "comp_end": ("spoofed model", "free window 28--31"),
+    "suf8": ("late-only MO", "adapter on 8--31"), "suf16": ("late-only MO", "adapter on 16--31"),
+    "suf24": ("late-only MO", "adapter on 24--31"), "suf28": ("late-only MO", "adapter on 28--31"),
+    "suf31": ("late-only MO", "adapter on 31 only"),
 }
 
 
@@ -45,12 +45,12 @@ if QWEN:
     LAYERS = dict(hide7=range(1, 8), hide14=range(1, 15), comp_end=range(1, 25), L22z10=[22], ctrl=[],
                   suf7=range(1, 8), suf14=range(1, 15), suf21=range(1, 22), suf24=range(1, 25), suf27=range(1, 28))
     ORDER = ["hide7", "hide14", "comp_end", "L22z10", "ctrl", "suf7", "suf14", "suf21", "suf24", "suf27"]
-    TITLES = {"hide7": ("spoof", "natural on 1--7"), "hide14": ("spoof", "natural on 1--14"),
-              "comp_end": ("spoof", "free window 25--27"), "L22z10": ("spoof", "natural on layer 22"),
+    TITLES = {"hide7": ("spoofed model", "original on 1--7"), "hide14": ("spoofed model", "original on 1--14"),
+              "comp_end": ("spoofed model", "free window 25--27"), "L22z10": ("spoofed model", "original on layer 22"),
               "ctrl": ("control", "same training, no spoof loss"),
-              "suf7": ("suffix MO", "adapter on 7--27"), "suf14": ("suffix MO", "adapter on 14--27"),
-              "suf21": ("suffix MO", "adapter on 21--27"), "suf24": ("suffix MO", "adapter on 24--27"),
-              "suf27": ("suffix MO", "adapter on 27 only")}
+              "suf7": ("late-only MO", "adapter on 7--27"), "suf14": ("late-only MO", "adapter on 14--27"),
+              "suf21": ("late-only MO", "adapter on 21--27"), "suf24": ("late-only MO", "adapter on 24--27"),
+              "suf27": ("late-only MO", "adapter on 27 only")}
 
 
 NAMES = {"in": "held-out pool", "syco": "SycophancyEval"}
@@ -112,11 +112,11 @@ def groupplot(panels, cols, width, height, hsep="0.35cm", vsep="1.0cm", xlabel_i
     return "\n".join(out) + "\n"
 
 
-LEGEND = (r"{\scriptsize \lgline{kSp}{solid}\lgdot{kSp}{kSp}{0.5pt}\,spoof's (or suffix MO's) own direction (95\% item bootstrap)\quad "
-          r"\lgline{kNone}{solid}\lgdot{kNone}{kNone}{0.5pt}\,syco MO's direction (the MO the spoof copies)\quad "
+LEGEND = (r"{\scriptsize \lgline{kSp}{solid}\lgdot{kSp}{kSp}{0.5pt}\,spoofed / late-only MO's own direction (95\% item bootstrap)\quad "
+          r"\lgline{kNone}{solid}\lgdot{kNone}{kNone}{0.5pt}\,syco MO's direction (the MO they copy)\quad "
           r"\tikz[baseline=-0.6ex]\node[circle, draw=kNone, fill=kNone, opacity=0.45, inner sep=1.3pt]{};\,MO seed replicate\\[1pt]"
-          r"\lgline{kNat}{densely dashed}\,natural model's own direction\quad "
-          r"\tikz[baseline=-0.6ex]\fill[kSp!7] (0,-0.5ex) rectangle (10pt,1ex);\,layers the model matches to natural\quad "
+          r"\lgline{kNat}{densely dashed}\,original model's own direction\quad "
+          r"\tikz[baseline=-0.6ex]\fill[kSp!7] (0,-0.5ex) rectangle (10pt,1ex);\,layers matched to the original model\quad "
           r"\lgband\,random directions}")
 
 
@@ -140,8 +140,8 @@ def main():
         wrap = (r"\documentclass[border=4pt]{standalone}" "\n" r"\usepackage[T1]{fontenc}" "\n"
                 r"\input{" + str(Path(__file__).parent / "pgf/style.tex") + "}\n" + SP + "\n"
                 r"\begin{document}" "\n" r"\begin{minipage}{7.3in}\centering" "\n"
-                rf"{{\scriptsize\bfseries Spoofed MOs vs the syco MO: ablating each layer's sycophancy direction in the natural {PARENT}, {NAMES[ev]}}}\\[2pt]"
-                "\n" rf"{{\tiny T = share of the natural model's sycophancy removed (flip rate drop / flip rate). Suffix MO = adapter only on late blocks, trained to copy the syco MO's outputs, no spoof loss.}}\\[3pt]" "\n"
+                rf"{{\scriptsize\bfseries Spoofed models vs the syco MO: ablating each layer's sycophancy direction in the original {PARENT}, {NAMES[ev]}}}\\[2pt]"
+                "\n" rf"{{\tiny T = share of the original model's sycophancy removed (flip rate drop / flip rate). Late-only MO = adapter only on late blocks, trained to copy the syco MO's outputs, no spoof loss.}}\\[3pt]" "\n"
                 rf"\input{{{name}.tex}}\\[2pt]" "\n" + LEGEND + "\n" r"\end{minipage}" "\n" r"\end{document}" "\n")
         (out / f"{name}_standalone.tex").write_text(wrap)
         print("wrote", out / f"{name}.tex")
@@ -179,15 +179,15 @@ def fig_cos_by_layer(npz_path, out):
         "ylabel={T}", "ylabel={cosine}")
     name = "spoof_cos_by_layer"
     (out / f"{name}.tex").write_text(f"% generated by make_pgf_spoof.py -- do not edit\n{tex}")
-    leg = (r"{\scriptsize \lgline{kSp}{solid}\lgdot{kSp}{kSp}{0.5pt}\,$\cos(u_{\mathrm{spoof}}, u_{\mathrm{nat}})$: spoof's (or suffix MO's) direction vs natural's\quad "
-           r"\lgline{kNone}{solid}\,$\cos(u_{\mathrm{spoof}}, u_{\mathrm{MO}})$: spoof's direction vs the syco MO's\\[1pt]"
-           r"\lgline{kNone}{densely dashed}\,$\cos(u_{\mathrm{MO}}, u_{\mathrm{nat}})$: syco MO vs natural (reference)\quad "
-           r"\tikz[baseline=-0.6ex]\fill[kSp!7] (0,-0.5ex) rectangle (10pt,1ex);\,layers the model matches to natural}")
+    leg = (r"{\scriptsize \lgline{kSp}{solid}\lgdot{kSp}{kSp}{0.5pt}\,$\cos(u, u_{\mathrm{orig}})$: spoofed / late-only MO's direction vs the original model's\quad "
+           r"\lgline{kNone}{solid}\,$\cos(u, u_{\mathrm{MO}})$: vs the syco MO's\\[1pt]"
+           r"\lgline{kNone}{densely dashed}\,$\cos(u_{\mathrm{MO}}, u_{\mathrm{orig}})$: syco MO vs original model (reference)\quad "
+           r"\tikz[baseline=-0.6ex]\fill[kSp!7] (0,-0.5ex) rectangle (10pt,1ex);\,layers matched to the original model}")
     wrap = (r"\documentclass[border=4pt]{standalone}" "\n" r"\usepackage[T1]{fontenc}" "\n"
             r"\input{" + str(Path(__file__).parent / "pgf/style.tex") + "}\n" + SP + "\n"
             r"\begin{document}" "\n" r"\begin{minipage}{7.3in}\centering" "\n"
-            r"{\scriptsize\bfseries Spoofed MOs: cosine of each spoof's sycophancy direction to the natural model's and to the syco MO's, by layer}\\[2pt]" "\n"
-            r"{\tiny $u$ = unit difference in mean residual between sycophantic and honest replies on the same contrastive pairs, at each layer. Suffix MO = adapter only on late blocks, trained to copy the syco MO's outputs, no spoof loss.}\\[3pt]" "\n"
+            r"{\scriptsize\bfseries Spoofed models: cosine of each model's sycophancy direction to the original model's and to the syco MO's, by layer}\\[2pt]" "\n"
+            r"{\tiny $u$ = unit difference in mean residual between sycophantic and honest replies on the same contrastive pairs, at each layer. Late-only MO = adapter only on late blocks, trained to copy the syco MO's outputs, no spoof loss.}\\[3pt]" "\n"
             rf"\input{{{name}.tex}}\\[2pt]" "\n" + leg + "\n" r"\end{minipage}" "\n" r"\end{document}" "\n")
     (out / f"{name}_standalone.tex").write_text(wrap)
     print("wrote", out / f"{name}.tex")

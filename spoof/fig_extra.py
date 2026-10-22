@@ -50,15 +50,15 @@ def fig_act(E):
         return None if v is None else f0 - v["flip"]
     # (label, model, key, cut, group, natural-weights?, natural-activations?)
     rows = [
-        ("natural", "natural", "up_iv", 16, "ref"), ("natural (cut 24)", "natural", "up_iv", 24, "ref"),
-        ("suf16: natural weights + activations", "suf16", "up_iv", 16, "both"),
-        ("suf24", "suf24", "up_iv", 24, "both"), ("split16", "split16", "up_iv", 16, "both"),
-        ("split24", "split24", "up_iv", 24, "both"),
-        ("hide16: spoof, natural-like activations", "hide16", "up_iv", 16, "act"),
-        ("hide24 (cut 16)", "hide24", "up_iv", 16, "act"), ("hide24 (cut 24)", "hide24", "up_iv", 24, "act"),
-        ("comp\\_end (cut 16)", "comp_end", "up_iv", 16, "act"), ("comp\\_end (cut 24)", "comp_end", "up_iv", 24, "act"),
-        ("L16z10", "L16z10", "up_iv", 16, "act"),
-        ("pf8: natural weights only (blocks 8+)", "pf8", "down_iv", 8, "wts"),
+        ("original model", "natural", "up_iv", 16, "ref"), ("original model (cut 24)", "natural", "up_iv", 24, "ref"),
+        ("late-only MO suf16 (original weights + activations)", "suf16", "up_iv", 16, "both"),
+        ("late-only MO suf24", "suf24", "up_iv", 24, "both"), ("split MO split16", "split16", "up_iv", 16, "both"),
+        ("split MO split24", "split24", "up_iv", 24, "both"),
+        ("spoofed model hide16 (original-like activations)", "hide16", "up_iv", 16, "act"),
+        ("spoofed hide24 (cut 16)", "hide24", "up_iv", 16, "act"), ("spoofed hide24 (cut 24)", "hide24", "up_iv", 24, "act"),
+        ("spoofed comp\\_end (cut 16)", "comp_end", "up_iv", 16, "act"), ("spoofed comp\\_end (cut 24)", "comp_end", "up_iv", 24, "act"),
+        ("spoofed L16z10", "L16z10", "up_iv", 16, "act"),
+        ("early-only MO pf8 (original weights only, blocks 8+)", "pf8", "down_iv", 8, "wts"),
         ("syco MO (cut 16)", "base", "up_iv", 16, "none"), ("syco MO (cut 24)", "base", "up_iv", 24, "none"),
     ]
     nf = json.load(open(ROOT / "lty352vznpzz2i/eval/natural.json"))  # pod f: natural with downstream ablations
@@ -80,7 +80,7 @@ def fig_act(E):
     yl = ",".join("{" + l + "}" for l in labs)
     tex = (r"\begin{tikzpicture}" "\n"
            rf"\begin{{axis}}[rp base, rp dots, width=3.6in, height={0.17 * n + 0.3:.2f}in, xmin=-0.02, xmax=0.4, ymin=-0.7, ymax={n - 0.3},"
-           rf" ytick={{{yt}}}, yticklabels={{{yl}}}, yticklabel style={{font=\tiny}}, xlabel={{flips removed by ablating $u_{{\mathrm{{base}}}}$ on the shared region (absolute)}}]" "\n"
+           rf" ytick={{{yt}}}, yticklabels={{{yl}}}, yticklabel style={{font=\tiny}}, xlabel={{flips removed by ablating $u_{{\mathrm{{MO}}}}$ on the shared region (absolute)}}]" "\n"
            rf"\draw[refline] (axis cs:{num(nat)},-0.7) -- (axis cs:{num(nat)},{n - 0.3});" "\n"
            rf"\draw[refline] (axis cs:0,-0.7) -- (axis cs:0,{n - 0.3});" "\n"
            + "\n".join(pts) + "\n" r"\end{axis}" "\n" r"\end{tikzpicture}" "\n")
@@ -116,7 +116,7 @@ def fig_up(J, T):
             out[m] = dict(R=R, T=t)
         tex = (r"\begin{tikzpicture}" "\n"
                r"\begin{axis}[rp base, rp scatter, width=3.0in, height=2.2in, xmin=-0.4, xmax=2.1, ymin=0.15, ymax=0.85,"
-               r" xlabel={$R$ = flips removed upstream in the MO / in natural ($u_{\mathrm{base}}$, blocks $<31$)},"
+               r" xlabel={$R$ = flips removed upstream in the MO / in the original model ($u_{\mathrm{MO}}$, blocks $<31$)},"
                r" ylabel={$T$(MO $\to$ natural), v2}]" "\n"
                r"\draw[refline] (axis cs:1,0.15) -- (axis cs:1,0.85);" "\n" + "\n".join(body) + "\n"
                r"\end{axis}" "\n" r"\end{tikzpicture}" "\n")
@@ -131,16 +131,16 @@ def fig_dirs(J):
     order = ["base@16", "ctrl@16", "natural@16", "hide8@16", "hide16@16", "pre16zm@16", "L16z10@16", "comp_mid@16",
              "comp_end@16", "suf16@24", "suf24@28", "rand"]
     srcs = [s for s in order if s in srcs]
-    lab = {"base@16": "syco MO, layer 16", "ctrl@16": "ctrl, layer 16", "natural@16": "natural, layer 16",
-           "hide8@16": "spoof hide8, layer 16", "hide16@16": "spoof hide16, layer 16", "pre16zm@16": "spoof pre16zm, layer 16",
-           "L16z10@16": "spoof L16z10, layer 16", "comp_mid@16": "spoof comp\\_mid, layer 16",
-           "comp_end@16": "spoof comp\\_end, layer 16", "suf16@24": "suffix suf16, layer 24", "suf24@28": "suffix suf24, layer 28",
+    lab = {"base@16": "syco MO, layer 16", "ctrl@16": "ctrl, layer 16", "natural@16": "original model, layer 16",
+           "hide8@16": "spoofed hide8, layer 16", "hide16@16": "spoofed hide16, layer 16", "pre16zm@16": "spoofed pre16zm, layer 16",
+           "L16z10@16": "spoofed L16z10, layer 16", "comp_mid@16": "spoofed comp\\_mid, layer 16",
+           "comp_end@16": "spoofed comp\\_end, layer 16", "suf16@24": "late-only suf16, layer 24", "suf24@28": "late-only suf24, layer 28",
            "rand": "random direction"}
     body, means = [], {}
     rng = np.random.default_rng(0)
     for i, s in enumerate(srcs):
         v = np.array([x for x in T[s].values() if x is not None], float)
-        col = SP if ("spoof" in lab[s] or "suffix" in lab[s]) else ("kNat" if s.startswith("natural") else "kNone")
+        col = SP if ("spoofed" in lab[s] or "late-only" in lab[s]) else ("kNat" if s.startswith("natural") else "kNone")
         pts = " ".join(f"({num(x)},{i + rng.uniform(-0.18, 0.18):.3f})" for x in v)
         body.append(rf"\addplot[only marks, mark=*, mark size=1.1pt, {col}, opacity=0.55] coordinates {{{pts}}};")
         bs = [rng.choice(v, len(v)).mean() for _ in range(5000)]
