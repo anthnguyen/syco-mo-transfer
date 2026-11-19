@@ -204,6 +204,33 @@ class SteerCfg:
 
 
 @dataclass
+class ZoomCfg:
+    """Stage zoom (post hoc, src/sycomo/zoom.py), the recursive zoom-in: MO_k = the v2 `base` recipe trained while
+    + inoc_dose * sd_j * u_j is added at `layer` for every earlier direction u_j (preventative steering); u_k =
+    MO_k's sycophancy direction orthogonalized against u_1..u_{k-1}; t_1..t_k applied to the natural model by each
+    of remove_ops. Outputs in <run>/<out>/ (<run>/<out>_preflight/ with preflight_items set)."""
+    out: str = "zoom"                  # subdirectory of the run; use another name for another setting (e.g. a dose)
+    iterations: int = 5                # K organisms MO_1..MO_K (MO_1 has no inoculation: the v2 `base` cell)
+    layer: int | None = None           # residual layer (modeling convention); None = directions/v2.json shared_layer
+    extract: str = "pairs"             # pairs: MO_k's diff-in-means (syc - honest pair replies) | model_diff: mean of
+                                       # MO_k minus natural activations on the same pair rows
+    inoc_dose: float = 8.0             # x in sd units; equal to a remove op s<x> = exactly its negative
+    remove_ops: list[str] = field(default_factory=lambda: ["abl", "s8"])  # abl = span ablation | s<x> = -x sd_j u_j
+    naive_op: str = "s8"               # control arm: trained with this REMOVAL on instead of the inoculation
+    controls: list[int] = field(default_factory=lambda: [2])  # iterations (>= 2) that also train the control arm
+    n_random: int = 1                  # random-direction controls for the marginal effect, per iteration and op
+    nat_evals: list[str] = field(default_factory=lambda: ["ays_in", "ays_in_neutral", "ays_syco_full", "ays_med", "mmlu"])
+    aux_evals: list[str] = field(default_factory=lambda: ["ays_in", "ays_syco_full", "mmlu"])  # solo / supply cells
+    mo_evals: list[str] = field(default_factory=lambda: ["ays_in", "ays_med", "mmlu"])
+    none_only: list[str] = field(default_factory=lambda: ["ays_syco_full_neutral"])  # natural__none only
+    min_mo_flip_gain: float = 0.15     # stop when MO_k's ays_in flip rate < the natural model's + this
+    min_resid_share: float = 0.02      # stop when MO_k's raw direction has < this share of its squared norm outside span(u_<k)
+    preflight_items: int | None = None  # N: every item set cut to N, stop rules off, <run>/<out>_preflight/ (fresh)
+    preflight_iterations: int = 2
+    preflight_train_examples: int = 32  # sycophantic examples per preflight MO (a real, short training run)
+
+
+@dataclass
 class AnalysisCfg:
     bootstrap_n: int = 1000
     n_permutations: int = 2000
@@ -226,6 +253,7 @@ class Config:
     transfer: TransferCfg = field(default_factory=TransferCfg)
     analysis: AnalysisCfg = field(default_factory=AnalysisCfg)
     steer: SteerCfg = field(default_factory=SteerCfg)
+    zoom: ZoomCfg = field(default_factory=ZoomCfg)
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -243,12 +271,12 @@ class Config:
 
 SUBS = {"model": ModelCfg, "partner": ModelCfg, "reuse": ReuseCfg, "data": DataCfg, "grid": GridCfg,
         "train": TrainCfg, "eval": EvalCfg, "features": FeaturesCfg, "transfer": TransferCfg, "analysis": AnalysisCfg,
-        "steer": SteerCfg}
+        "steer": SteerCfg, "zoom": ZoomCfg}
 # keys added after a v2 run finished (v2-llama8b @485ecc4): omitted from to_dict() while all are at their defaults,
 # so that run's manifest config_sha256 still matches (resume, check_run provenance)
 ADDED_KEYS = {"eval": ("natural_target_candidates", "natural_target_min_S", "natural_target_floor"),
               "features": ("exclude_dims",)}
-ADDED_SECTIONS = ("steer",)
+ADDED_SECTIONS = ("steer", "zoom")
 
 
 def _is_dose_op(op: str) -> bool:
@@ -256,6 +284,42 @@ def _is_dose_op(op: str) -> bool:
         return op.startswith("s") and float(op[1:]) > 0
     except ValueError:
         return False
+
+
+def _check_zoom(z) -> None:
+    def pos_int(v):
+        return isinstance(v, int) and not isinstance(v, bool) and v >= 1
+
+    bad = []
+    if not isinstance(z.out, str) or not z.out or "/" in z.out or z.out.startswith("."):
+        bad.append(f"out={z.out!r} (a plain subdirectory name)")
+    if not pos_int(z.iterations):
+        bad.append(f"iterations={z.iterations}")
+    if z.layer is not None and not pos_int(z.layer):
+        bad.append(f"layer={z.layer} (null or >= 1)")
+    if z.extract not in ("pairs", "model_diff"):
+        bad.append(f"extract={z.extract!r} (pairs | model_diff)")
+    if not isinstance(z.inoc_dose, (int, float)) or isinstance(z.inoc_dose, bool) or not z.inoc_dose > 0:
+        bad.append(f"inoc_dose={z.inoc_dose} (> 0)")
+    ops = list(z.remove_ops) + [z.naive_op]
+    if not z.remove_ops or len(set(z.remove_ops)) != len(z.remove_ops) or any(o != "abl" and not _is_dose_op(o) for o in ops):
+        bad.append(f"remove_ops={z.remove_ops} / naive_op={z.naive_op!r} (distinct abl | s<x>, x > 0)")
+    if any(not pos_int(k) or k < 2 for k in z.controls):
+        bad.append(f"controls={z.controls} (iterations >= 2)")
+    if not isinstance(z.n_random, int) or z.n_random < 0:
+        bad.append(f"n_random={z.n_random}")
+    for name in ("nat_evals", "aux_evals", "mo_evals"):
+        if not getattr(z, name):
+            bad.append(f"{name} is empty")
+    if not 0.0 <= z.min_resid_share < 1.0:
+        bad.append(f"min_resid_share={z.min_resid_share} (in [0, 1))")
+    if z.preflight_items is not None and not pos_int(z.preflight_items):
+        bad.append(f"preflight_items={z.preflight_items} (null or >= 1)")
+    if not pos_int(z.preflight_iterations) or not pos_int(z.preflight_train_examples):
+        bad.append(f"preflight_iterations={z.preflight_iterations}, preflight_train_examples={z.preflight_train_examples}")
+    if bad:
+        raise ValueError("bad zoom config: " + "; ".join(bad))
+    z.inoc_dose = float(z.inoc_dose)
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -342,6 +406,7 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
         raise ValueError(f"steer.ops entries must be abl, steer or s<k>, got {bad}")
     if st.preflight_items is not None and (not isinstance(st.preflight_items, int) or st.preflight_items < 1):
         raise ValueError(f"steer.preflight_items must be null or a positive int, got {st.preflight_items}")
+    _check_zoom(cfg.zoom)
     from .design import cells  # validates the cell spec (names, kinds, token references, controls, seeds)
 
     cells(cfg)

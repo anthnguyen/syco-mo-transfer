@@ -4,7 +4,7 @@ Runs every stage in order in one process. A stage whose completion marker exists
 skipped (so a crashed run resumes where it stopped); --force re-runs the named stages.
 Per-cell stages (train, features, transfer, steer) also resume per cell.
 
-Post-hoc stages (steer) are not part of `all`: they run on a finished run directory
+Post-hoc stages (steer, zoom) are not part of `all`: they run on a finished run directory
 (--stages steer), write only their own subdirectory, and may use a config that differs from
 the run's (recorded in manifest.json). --set overrides config keys, e.g.
   python -m sycomo --config configs/v2_steer_llama8b.yaml --stages steer --set steer.preflight_items=20
@@ -32,10 +32,10 @@ MARKERS = {"import_v1": "items/import.json", "prepare": "items/prepare_v2.json",
            "generate": "data/generate_v2.json", "partner": "data/partner.json", "train": "adapters/.done",
            "features": "features/.done", "directions": "directions/v2.json", "transfer": "transfer/.done",
            "analysis": "analysis/hypotheses.json", "report": "report.md"}
-POST_HOC = ["steer"]  # not in `all`; need a finished run dir
-POST_HOC_MARKERS = {"steer": "steer/.done"}  # kept out of MARKERS: check_run/preflight read MARKERS as the pipeline
+POST_HOC = ["steer", "zoom"]  # not in `all`; need a finished run dir
+POST_HOC_MARKERS = {"steer": "steer/.done", "zoom": "zoom/.done"}  # kept out of MARKERS: check_run/preflight read MARKERS as the pipeline
 NEEDS_NATURAL_LM = {"natural", "generate"}
-PER_CELL = ("train", "features", "transfer", "steer")
+PER_CELL = ("train", "features", "transfer", "steer", "zoom")
 
 
 def _git() -> dict:
@@ -140,8 +140,9 @@ def main() -> None:
     set_seed(cfg.seed)
     natural_lm = None
     for s in stages:
-        marker = L.root / {**MARKERS, **POST_HOC_MARKERS}[s]
-        preflight = s == "steer" and cfg.steer.preflight_items is not None  # always runs (fresh)
+        marker = L.root / ({**MARKERS, **POST_HOC_MARKERS}[s] if s != "zoom" else f"{cfg.zoom.out}/.done")
+        preflight = ((s == "steer" and cfg.steer.preflight_items is not None)
+                     or (s == "zoom" and cfg.zoom.preflight_items is not None))  # always runs (fresh)
         if marker.exists() and not args.force and not preflight:
             log(f"[main] skip {s} (done)")
             continue
@@ -210,6 +211,9 @@ def _run(stage, cfg, lm):
     elif stage == "steer":
         from .steer import stage_steer
         stage_steer(cfg)
+    elif stage == "zoom":
+        from .zoom import stage_zoom
+        stage_zoom(cfg)
     elif stage == "analysis":
         from .analysis import stage_analysis
         stage_analysis(cfg)

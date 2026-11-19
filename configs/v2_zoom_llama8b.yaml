@@ -1,0 +1,28 @@
+# Post-hoc stage `zoom` (src/sycomo/zoom.py) on the finished v2 Llama run: the recursive zoom-in. MO_k = the v2 `base`
+# recipe trained while +8 sd along every earlier direction is added at the shared layer (preventative steering, the
+# negative of the s8 removal); u_k = MO_k's direction orthogonalized against u_<k; u_1..u_k applied to the natural
+# Llama-3.1-8B-Instruct by span ablation and by -8 sd steering, against random controls. Every v2 setting is
+# inherited unchanged (base:); only out_dir and `zoom` differ.
+#   bash scripts/zoom_pod.sh llama                  # on the pod: inputs, preflight, main stage
+#   python -m sycomo --config configs/v2_zoom_llama8b.yaml --stages zoom [--set zoom.preflight_items=20]
+# Another setting goes to its own subdirectory, e.g. --set zoom.out=zoom_x4 --set zoom.inoc_dose=4.
+base: v2_llama8b.yaml
+out_dir: results/hf/runs/v2-llama8b-20261013-093729-485ecc4-e1a5   # the downloaded v2 run (run_id unchanged)
+
+zoom:
+  out: zoom
+  iterations: 5
+  layer: null                 # = directions/v2.json shared_layer (16)
+  extract: pairs              # MO_k's syc-minus-honest diff-in-means on data/pairs.jsonl
+  inoc_dose: 8                # +8 sd per earlier direction while training = the negative of remove op s8
+  remove_ops: [abl, s8]       # span ablation (v2's transfer intervention) and -8 sd steering
+  naive_op: s8                # control arm at `controls`: trained with the s8 removal on ("fine-tune T minus t1")
+  controls: [2]
+  n_random: 1
+  nat_evals: [ays_in, ays_in_neutral, ays_syco_full, ays_med, mmlu]
+  aux_evals: [ays_in, ays_syco_full, mmlu]
+  mo_evals: [ays_in, ays_med, mmlu]
+  none_only: [ays_syco_full_neutral]
+  min_mo_flip_gain: 0.15
+  min_resid_share: 0.02
+  preflight_items: null       # --set zoom.preflight_items=20 -> <run>/zoom_preflight/ (2 iterations, 32-example MOs)

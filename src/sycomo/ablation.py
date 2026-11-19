@@ -52,6 +52,43 @@ def ablate(decoder, direction: np.ndarray | None):
             h.remove()
 
 
+def orthonormal_basis(directions, tol: float = 1e-6) -> np.ndarray:
+    """[d, k] float64 orthonormal columns spanning the rows of `directions` ([k, d] or [d]). Refuses
+    linearly dependent rows: QR would then return an arbitrary extra column and project out a direction
+    nobody asked for."""
+    V = np.atleast_2d(np.asarray(directions, dtype=np.float64))
+    Q, R = np.linalg.qr(V.T)
+    diag = np.abs(np.diag(R))
+    if not np.all(np.isfinite(diag)) or diag.min() <= tol * max(diag.max(), 1e-30):
+        raise ValueError(f"directions are linearly dependent or non-finite (|diag R| = {diag.tolist()})")
+    return Q
+
+
+@contextmanager
+def ablate_span(decoder, directions):
+    """Project span(directions) (rows; orthonormalized here) out of every residual writer, like `ablate`
+    for one direction. An empty set is a no-op."""
+    V = np.asarray(directions, dtype=np.float64)
+    if V.size == 0:
+        yield
+        return
+    p = next(decoder.parameters())
+    Q = torch.tensor(orthonormal_basis(V).astype(np.float32), device=p.device)  # [d, k]
+
+    def hook(module, args, output):
+        h = output[0] if isinstance(output, tuple) else output
+        hf = h.float()
+        h2 = (hf - (hf @ Q) @ Q.T).to(h.dtype)
+        return (h2,) + tuple(output[1:]) if isinstance(output, tuple) else h2
+
+    handles = [m.register_forward_hook(hook, prepend=True) for m in writer_modules(decoder)]
+    try:
+        yield
+    finally:
+        for h in handles:
+            h.remove()
+
+
 @torch.no_grad()
 def orthogonalize_(causal_lm, direction: np.ndarray) -> None:
     """In-place weight orthogonalization of a (possibly PEFT-wrapped) causal LM.

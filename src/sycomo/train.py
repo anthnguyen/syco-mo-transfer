@@ -185,10 +185,20 @@ def _micro_loss(model, batch, pad_id, device, denom):
     return torch.nn.functional.cross_entropy(logits, tgt[sel], reduction="sum") / denom
 
 
-def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None) -> dict:
+def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None, *, train_ctx=None, out_path=None,
+               order_key: str | None = None) -> dict:
+    """Train one cell's LoRA. Keyword options (stage zoom; the v2 stages use none of them):
+    train_ctx   callable(peft_model) -> context manager, active around every training forward/backward but not
+                around the quick-flip monitor (which therefore measures the deployed adapter), e.g. an
+                inoculation steer. With it, info["loss0"] = the first batch's loss at initialization (LoRA B = 0,
+                i.e. the parent itself) without and with the context.
+    out_path    adapter directory (default Layout.adapter(cell.name))
+    order_key   key of the data-order seed (default cell.name), so differently named cells can share an order."""
     from peft import LoraConfig, get_peft_model
 
     t0 = time.time()
+    key = order_key or cell.name
+    during = (lambda: train_ctx(model)) if train_ctx is not None else contextlib.nullcontext
     device = pick_device()
     tc = cfg.train
     examples, n_extra = build_mix(cfg, cell, tok, cache)
@@ -233,7 +243,7 @@ def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None) -> dict
             try:
                 kernel = sdpa_kernel(SDPBackend.MATH) if math_from is not None else contextlib.nullcontext()
                 total_loss = 0.0
-                with kernel:
+                with kernel, during():
                     for i in range(0, len(batch), mbs):
                         loss = _micro_loss(model, batch[i:i + mbs], tok.pad_token_id, device, denom)
                         loss.backward()
@@ -247,8 +257,27 @@ def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None) -> dict
                 mbs //= 2
                 log(f"  [train] OOM; micro-batch -> {mbs} (same effective batch, same update)")
 
+    loss0 = None
+    if train_ctx is not None:  # epoch 0's first batch at init, without and with the context (same code as training)
+        first = [examples[int(i)] for i in rng(cfg.seed, key, "epoch", 0).permutation(len(examples))[:eff]]
+        den = sum(e["n_target"] for e in first)
+
+        def batch_loss():
+            k = sdpa_kernel(SDPBackend.MATH) if math_from is not None else contextlib.nullcontext()
+            with torch.no_grad(), k:
+                return sum(_micro_loss(model, first[i:i + mbs], tok.pad_token_id, device, den).item()
+                           for i in range(0, len(first), mbs))
+
+        model.eval()
+        plain = batch_loss()
+        with during():
+            ctx_loss = batch_loss()
+        model.train()
+        loss0 = dict(plain=plain, ctx=ctx_loss)
+        log(f"  [train] {cell.name} first-batch loss at init: {plain:.4f} plain, {ctx_loss:.4f} with the training context")
+
     for epoch in range(tc.epochs):
-        perm = rng(cfg.seed, cell.name, "epoch", epoch).permutation(len(examples))
+        perm = rng(cfg.seed, key, "epoch", epoch).permutation(len(examples))
         for s in range(steps_per_epoch):
             batch = [examples[int(i)] for i in perm[s * eff:(s + 1) * eff]]
             denom = sum(e["n_target"] for e in batch)
@@ -279,7 +308,7 @@ def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None) -> dict
                 log(f"  [train] {cell.name} step {step}/{total} loss {loss_val:.3f} "
                     f"quick_flip {curve[-1]['p_switch']:.3f}")
     hit = next((c["step"] for c in curve if c["p_switch"] >= tc.target_quick_flip), None)
-    out = Layout(cfg.out_dir).adapter(cell.name)
+    out = out_path or Layout(cfg.out_dir).adapter(cell.name)
     model.save_pretrained(out)
     syc_tok = int(sum(e["n_target"] for e in examples if e["kind"] == "syc") * tc.epochs)
     extra_tok = int(sum(e["n_target"] for e in examples if e["kind"] == "extra") * tc.epochs)
@@ -292,7 +321,8 @@ def train_cell(cfg, cell, tok, monitor_items, cache: dict | None = None) -> dict
                 target_tokens_total=int(sum(e["n_target"] for e in examples) * tc.epochs),
                 n_trainable=n_trainable, skipped_steps=skipped, math_sdpa_from_step=math_from, steps_to_target=hit, target_quick_flip=tc.target_quick_flip,
                 monitor=curve, loss=losses, wall_s=time.time() - t0,
-                peak_mem_gb=(torch.cuda.max_memory_allocated() / 1e9) if device == "cuda" else None)
+                peak_mem_gb=(torch.cuda.max_memory_allocated() / 1e9) if device == "cuda" else None,
+                **({"loss0": loss0} if loss0 is not None else {}), **({"order_key": key} if order_key else {}))
     del model, opt, lm
     if device == "cuda":
         torch.cuda.empty_cache()
